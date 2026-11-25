@@ -1,0 +1,17 @@
+{
+  "id": 8,
+  "name": "The long way out",
+  "loopCapacity": 5,
+  "queue": ["red", "red", "red", "yellow", "yellow", "yellow", "red", "blue", "blue", "blue", "green", "green", "green", "red", "red", "red", "red", "red", "red", "red", "red", "red", "yellow", "yellow", "yellow", "blue", "blue", "blue", "green", "green", "green", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow"],
+  "buses": [
+    {"id": "r1", "colour": "red", "capacity": 6, "slot": "LW0"},
+    {"id": "r2", "colour": "red", "capacity": 4, "slot": "LW1"},
+    {"id": "r3", "colour": "red", "capacity": 3, "slot": "LW2"},
+    {"id": "y3", "colour": "yellow", "capacity": 3, "slot": "LW3"},
+    {"id": "y1", "colour": "yellow", "capacity": 6, "slot": "LC0"},
+    {"id": "y2", "colour": "yellow", "capacity": 3, "slot": "LC1"},
+    {"id": "g1", "colour": "green", "capacity": 3, "slot": "RC0"},
+    {"id": "g2", "colour": "green", "capacity": 3, "slot": "RC1"},
+    {"id": "b1", "colour": "blue", "capacity": 6, "slot": "RE0"}
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": 5,
+  "name": "Long bus, short bus",
+  "loopCapacity": 6,
+  "queue": ["red", "red", "red", "yellow", "yellow", "blue", "blue", "blue", "yellow", "blue", "blue", "blue", "red", "red", "red", "red", "red", "red", "red", "red", "red", "red", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow"],
+  "buses": [
+    {"id": "r1", "colour": "red", "capacity": 6, "slot": "LW0"},
+    {"id": "r2", "colour": "red", "capacity": 4, "slot": "LW1"},
+    {"id": "r3", "colour": "red", "capacity": 3, "slot": "LW2"},
+    {"id": "y1", "colour": "yellow", "capacity": 6, "slot": "LC0"},
+    {"id": "y2", "colour": "yellow", "capacity": 3, "slot": "RC0"},
+    {"id": "b1", "colour": "blue", "capacity": 6, "slot": "RE0"}
+  ]
+}

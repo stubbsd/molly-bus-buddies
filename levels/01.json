@@ -1,0 +1,11 @@
+{
+  "id": 1,
+  "name": "First ride",
+  "loopCapacity": 16,
+  "queue": ["red", "red", "red", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow"],
+  "buses": [
+    {"id": "r1", "colour": "red", "capacity": 3, "slot": "LW0"},
+    {"id": "y1", "colour": "yellow", "capacity": 3, "slot": "RC0"},
+    {"id": "y2", "colour": "yellow", "capacity": 3, "slot": "RE0"}
+  ]
+}

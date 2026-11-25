@@ -1,0 +1,17 @@
+{
+  "name": "Molly's Bus Buddies",
+  "short_name": "Bus Buddies",
+  "description": "A calm, colourful bus-planning puzzle. No ads, no timer, works offline.",
+  "lang": "en-GB",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#B6E04A",
+  "theme_color": "#B6E04A",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
