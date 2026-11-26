@@ -1,7 +1,7 @@
 {
   "id": 8,
   "name": "The long way out",
-  "loopCapacity": 6,
+  "loopCapacity": 24,
   "queue": ["red", "red", "red", "red", "red", "red", "green", "green", "green", "green", "yellow", "yellow", "yellow", "red", "red", "yellow", "blue", "blue", "blue", "blue", "blue", "blue", "green", "green", "red", "red", "red", "yellow", "red", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "blue", "blue", "yellow", "yellow", "blue", "yellow"],
   "buses": [
     {"id": "r1", "colour": "red", "capacity": 6, "slot": "LW0"},

@@ -1,7 +1,7 @@
 {
   "id": 10,
   "name": "Four at once",
-  "loopCapacity": 6,
+  "loopCapacity": 24,
   "queue": ["purple", "purple", "purple", "purple", "purple", "purple", "green", "green", "green", "purple", "purple", "purple", "blue", "blue", "blue", "red", "purple", "purple", "purple", "yellow", "red", "blue", "blue", "blue", "red", "red", "red", "red", "purple", "red", "red", "red", "green", "green", "green", "purple", "purple", "purple", "yellow", "yellow", "yellow", "yellow", "red", "red", "yellow", "yellow", "yellow", "yellow", "yellow", "red", "red", "red", "red", "red", "red", "red", "red", "red", "red", "red"],
   "buses": [
     {"id": "p1", "colour": "purple", "capacity": 4, "slot": "LW0"},

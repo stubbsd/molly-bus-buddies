@@ -1,7 +1,7 @@
 {
   "id": 7,
   "name": "Busy platform",
-  "loopCapacity": 6,
+  "loopCapacity": 24,
   "queue": ["green", "green", "green", "green", "blue", "yellow", "green", "yellow", "yellow", "yellow", "green", "blue", "blue", "yellow", "yellow", "blue", "yellow", "yellow", "yellow", "blue", "blue", "blue", "red", "red", "red", "red", "green", "green", "green", "red", "red", "green", "blue", "blue", "blue", "blue", "blue", "yellow", "yellow", "blue", "yellow"],
   "buses": [
     {"id": "g1", "colour": "green", "capacity": 6, "slot": "LW0"},

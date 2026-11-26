@@ -47,25 +47,42 @@ let loseTimer = 0;
 
 const busy = () => D.events.length > 0 || D.flyers.length > 0 || D.ghosts.some((g) => g.kind === "toBay");
 
+// The ring: people walk three abreast as one crowd, the front rank leading clockwise.
+function ringSpacing(n) { return Math.min(L.ringStepDeg, 360 / Math.max(1, Math.ceil(n / 3))); }
 function loopTarget(i, n) {
-  const sp = 360 / Math.max(n, 1);
-  return 90 - sp * (i + 0.5) + D.phase;
+  return { a: 90 - ringSpacing(n) * (Math.floor(i / 3) + 0.5) + D.phase, r: L.ringR[i % 3] };
+}
+
+// The queue waits in two feeder arms like the reference: colour groups take turns,
+// first group on the left, next on the right, and so on (stable for the whole level).
+let armOfIndex = [];
+function computeArms(level) {
+  armOfIndex = []; let arm = 0;
+  level.queue.forEach((c, i) => { if (i > 0 && c !== level.queue[i - 1]) arm = 1 - arm; armOfIndex.push(arm); });
+}
+function queueTargets() {
+  const n = [0, 0];
+  return D.queue.map((p) => queuePoint(L, p.arm, n[p.arm]++));
 }
 
 function rebuildDisplay() {
   const s = session.state;
-  D.queue = s.queue.map(person);
+  computeArms(session.level);
+  const offset = session.level.queue.length - s.queue.length;
+  D.queue = s.queue.map((c, i) => ({ ...person(c), arm: armOfIndex[offset + i] ?? 0 }));
   D.loop = s.loop.map(person);
   D.persons = new Map();
-  D.queue.forEach((p, i) => { const q = queuePoint(L, i); D.persons.set(p.pid, { mode: "q", x: q.x, y: q.y, a: 0 }); });
-  D.loop.forEach((p, i) => { const a = loopTarget(i, D.loop.length); const q = loopXY(L, a); D.persons.set(p.pid, { mode: "l", x: q.x, y: q.y, a }); });
+  const qt = queueTargets();
+  D.queue.forEach((p, i) => { const q = qt[i]; D.persons.set(p.pid, { mode: "q", x: q.x, y: q.y, a: 0, r: 0 }); });
+  D.loop.forEach((p, i) => { const t = loopTarget(i, D.loop.length); const q = loopXY(L, t.a, t.r); D.persons.set(p.pid, { mode: "l", x: q.x, y: q.y, a: t.a, r: t.r }); });
   D.bays = s.bays.map((b) => (b ? { id: b.id, colour: b.colour, capacity: b.capacity, filled: b.filled, pending: 0 } : null));
   D.ghosts = []; D.flyers = []; D.events = []; D.pendingSettle = false;
 }
 
 function snapPositions() {
-  D.queue.forEach((p, i) => { const q = queuePoint(L, i); Object.assign(D.persons.get(p.pid), { x: q.x, y: q.y }); });
-  D.loop.forEach((p, i) => { const per = D.persons.get(p.pid); per.a = loopTarget(i, D.loop.length); Object.assign(per, loopXY(L, per.a)); });
+  const qt = queueTargets();
+  D.queue.forEach((p, i) => { Object.assign(D.persons.get(p.pid), { x: qt[i].x, y: qt[i].y }); });
+  D.loop.forEach((p, i) => { const per = D.persons.get(p.pid); const t = loopTarget(i, D.loop.length); per.a = t.a; per.r = t.r; Object.assign(per, loopXY(L, per.a, per.r)); });
 }
 
 // ---------------- layout / resize ----------------
@@ -115,6 +132,7 @@ function step(now, dt) {
       const p = D.queue.shift(); D.loop.push(p);
       const per = D.persons.get(p.pid); per.mode = "l";
       per.a = (Math.atan2(per.y - L.island.cy, per.x - L.island.cx) * 180) / Math.PI;
+      per.r = Math.hypot(per.y - L.island.cy, per.x - L.island.cx);
       D.nextAt = now + T.enter * speed;
     } else if (e.type === "board") {
       if (arriving) break;
@@ -153,17 +171,20 @@ function step(now, dt) {
   D.ghosts = D.ghosts.filter((g) => !g.done);
   // people glide towards their places
   const k = RM() ? 1 : 1 - Math.exp(-dt * 9);
+  const qt = queueTargets();
   D.queue.forEach((p, i) => {
-    const per = D.persons.get(p.pid); const q = queuePoint(L, i);
+    const per = D.persons.get(p.pid); const q = qt[i];
     per.x += (q.x - per.x) * k; per.y += (q.y - per.y) * k;
   });
-  const n = D.loop.length, sp = 360 / Math.max(n, 1);
+  const n = D.loop.length, sp = ringSpacing(n);
   D.loop.forEach((p, i) => {
     const per = D.persons.get(p.pid);
-    let delta = (((loopTarget(i, n) - per.a) % 360) + 360) % 360;
+    const tg = loopTarget(i, n);
+    let delta = (((tg.a - per.a) % 360) + 360) % 360;
     if (delta > 360 - 0.75 * sp) delta -= 360;
     per.a += delta * k;
-    const q = loopXY(L, per.a);
+    per.r += (tg.r - per.r) * k;
+    const q = loopXY(L, per.a, per.r);
     per.x = q.x; per.y = q.y;
   });
   // confetti

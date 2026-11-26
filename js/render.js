@@ -45,28 +45,50 @@ export function computeLayout(w, h, insets, peopleCount = 30) {
     L.car = { x: pw + 10, y: st + 74, w: w - pw - 20 - insets.right, h: h - st - 74 - ctrlH };
     L.hudBottom = st + 80;
   }
-  // Loop + queue geometry inside the grass band.
+  // Feeder + ring geometry inside the grass band, after the reference video: two
+  // feeder channels come down from the top edge on the left and right, curve in like
+  // a big U and merge into a thick ring (three people wide) round a small grass hole.
+  // The ring opens at the bottom onto the bay road.
   const g = L.grass;
-  const top = L.hudBottom + 4;
-  const bottom = g.y + g.h - 10;
-  const Ruo = Math.max(70, Math.min(g.w / 2 - 30, (bottom - top - 16) / 1.5));
-  const br = clamp(Ruo * 0.058, 5, 13);
-  const laneW = br * 2.05;
-  const lanes = 3;              // people stand three abreast in the queue channel
-  const step = br * 2.05;       // spacing between ranks along the channel
+  const top = L.hudBottom + 2;
+  const bottom = g.y + g.h - 4;
+  const Ro = clamp(Math.min((bottom - top) / 2, g.w * 0.25), 70, 200);
+  const trackW = Ro * 0.72; // small hole, thick ring, as in the reference
+  const Ri = Ro - trackW;
+  const lanes = 3;
+  const laneW = (trackW - 6) / lanes;
+  const br = clamp(laneW * 0.53, 5, 24); // packed shoulder to shoulder, like the reference crowd
+  const step = laneW;
   const cx = g.x + g.w / 2;
-  const cy = top + Ruo;
-  const RuIn = Ruo - lanes * laneW - 4;
-  const trackW = br * 2.7;
-  const R = RuIn - 8 - trackW / 2;
-  L.island = { cx, cy, R, islandR: R - trackW / 2 - 2, trackW, Ruo, RuIn, lanes, laneW };
+  const cy = bottom - Ro;
+  const Rm = (Ro + Ri) / 2;
+  L.island = { cx, cy, Ro, Ri, Rm, trackW, lanes, laneW, R: Rm, islandR: Ri };
   L.br = br; L.step = step;
-  L.door = { x: cx, y: cy + R };
+  // ring lanes: inner to outer; ranks are spaced so the inner lane is packed
+  L.ringR = [0, 1, 2].map((k) => Ri + 3 + laneW * (k + 0.5));
+  L.ringStepDeg = (step / L.ringR[0]) * (180 / Math.PI);
+  L.door = { x: cx, y: cy + Ro - laneW * 0.4 };
   L.laneBottom = { x: cx, y: L.road.y + 6 };
-  // Queue ranks follow the horseshoe from 8 o'clock (150°) clockwise over the top to 4 o'clock (390°).
-  const midR = (RuIn + 2 + Ruo - 2) / 2;
-  L.queueRanks = Math.floor((rad(240) * midR) / step);
-  L.queueGeom = { cx, cy, r0: RuIn + 2 + laneW / 2, midR };
+  // Feeder arms. Centre line from where it meets the ring back up past the top edge.
+  const armW = trackW;
+  const spread = Math.min(g.w / 2 - armW / 2 - 12, Ro * 2.05);
+  L.arms = [-1, 1].map((side) => {
+    const a = rad(side < 0 ? 160 : 20);
+    const J = { x: cx + Rm * Math.cos(a), y: cy + Rm * Math.sin(a) };
+    const inward = { x: -Math.cos(a), y: -Math.sin(a) };
+    const A = { x: cx + side * spread, y: cy - Ro * 0.15 };
+    const k = Math.hypot(A.x - J.x, A.y - J.y) * 0.55;
+    const P1 = { x: J.x - inward.x * k, y: J.y - inward.y * k }, P2 = { x: A.x, y: A.y + k };
+    const pts = [];
+    for (let i = 0; i <= 40; i++) {
+      const u = i / 40, v = 1 - u;
+      pts.push({ x: v * v * v * J.x + 3 * v * v * u * P1.x + 3 * v * u * u * P2.x + u * u * u * A.x, y: v * v * v * J.y + 3 * v * v * u * P1.y + 3 * v * u * u * P2.y + u * u * u * A.y });
+    }
+    pts.push({ x: A.x, y: g.y - 900 });
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+    return { side, pts, cum, J, A, w: armW };
+  });
   // Bays
   const rd = L.road;
   const usable = rd.w - 24;
@@ -101,19 +123,31 @@ export function slotPos(L, slotId) {
   return { x: L.car.x + s.x * L.car.w, y: L.car.y + s.y * L.car.h, angle: s.angle };
 }
 
-export function queuePoint(L, i) {
-  const { cx, cy, r0, midR } = L.queueGeom;
-  const lanes = L.island.lanes;
-  let rank = Math.floor(i / lanes), lane = i % lanes;
-  if (rank >= L.queueRanks) { rank = L.queueRanks - 1; lane = lanes - 1; }
-  const a = rad(150 + 1.2 + ((rank + 0.5) * L.step * 180) / (Math.PI * midR));
-  const r = r0 + lane * L.island.laneW;
-  return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+/** Point at distance s back from the ring along an arm's centre line, offset sideways. */
+function armXY(arm, s, off) {
+  const { pts, cum } = arm;
+  let i = 1;
+  while (i < pts.length - 1 && cum[i] < s) i++;
+  const a = pts[i - 1], b = pts[i];
+  const seg = cum[i] - cum[i - 1] || 1;
+  const u = clamp((s - cum[i - 1]) / seg, 0, 1);
+  const dx = (b.x - a.x) / seg, dy = (b.y - a.y) / seg;
+  return { x: a.x + (b.x - a.x) * u - dy * off, y: a.y + (b.y - a.y) * u + dx * off };
 }
 
-export function loopXY(L, angleDeg) {
-  const { cx, cy, R } = L.island;
-  return { x: cx + R * Math.cos(rad(angleDeg)), y: cy + R * Math.sin(rad(angleDeg)) };
+/** Where the j-th waiting person in a feeder arm stands (0 = front, nearest the ring). */
+export function queuePoint(L, arm, j) {
+  const A = L.arms[arm];
+  const rank = Math.floor(j / L.island.lanes), lane = j % L.island.lanes;
+  const off = (lane - 1) * L.island.laneW * A.side * -1;
+  // the front rank stands just outside the ring wall, ready to step on
+  return armXY(A, L.island.trackW * 0.5 + 4 + (rank + 0.5) * L.step, off);
+}
+
+/** A point on the ring at a given radius (default: the middle lane). */
+export function loopXY(L, angleDeg, r = L.ringR[1]) {
+  const { cx, cy } = L.island;
+  return { x: cx + r * Math.cos(rad(angleDeg)), y: cy + r * Math.sin(rad(angleDeg)) };
 }
 
 /** Hit test parked buses: returns id of the closest bus whose (expanded) body contains the point. */
@@ -380,42 +414,31 @@ export function drawBackground(ctx, L) {
     ctx.fillStyle = P.bay; roundRect(ctx, b.x, b.y, b.w, b.h, 10); ctx.fill();
     ctx.lineWidth = 3; ctx.strokeStyle = P.bayStroke; ctx.stroke();
   }
-  // island, loop track, queue channel, boarding lane
-  const { cx, cy, R, islandR, trackW, Ruo, RuIn } = L.island;
-  // lane
-  ctx.fillStyle = "#ffffff";
-  const lw = trackW + 6;
-  roundRect(ctx, cx - lw / 2, cy + R - 4, lw, L.laneBottom.y - (cy + R) + 4, lw / 2); ctx.fill();
-  ctx.fillStyle = "#D7DCE3";
-  roundRect(ctx, cx - trackW / 2, cy + R, trackW, L.laneBottom.y - (cy + R), trackW / 2); ctx.fill();
-  // queue channel (horseshoe from 150° to 30° over the top)
-  ctx.lineCap = "round";
-  ctx.strokeStyle = "#ffffff"; ctx.lineWidth = Ruo - RuIn + 8;
-  ctx.beginPath(); ctx.arc(cx, cy, (Ruo + RuIn) / 2, rad(150), rad(390)); ctx.stroke();
-  ctx.strokeStyle = P.channel; ctx.lineWidth = Ruo - RuIn;
-  ctx.beginPath(); ctx.arc(cx, cy, (Ruo + RuIn) / 2, rad(150), rad(390)); ctx.stroke();
-  // short join from queue front to the loop at 8 o'clock
-  ctx.strokeStyle = "#D7DCE3"; ctx.lineWidth = trackW * 0.8;
-  ctx.beginPath();
-  ctx.moveTo(cx + RuIn * Math.cos(rad(150)), cy + RuIn * Math.sin(rad(150)));
-  ctx.lineTo(cx + R * Math.cos(rad(150)), cy + R * Math.sin(rad(150))); ctx.stroke();
-  // loop track
-  ctx.strokeStyle = "#ffffff"; ctx.lineWidth = trackW + 6;
-  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
-  ctx.strokeStyle = "#D7DCE3"; ctx.lineWidth = trackW;
-  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
-  // island
-  const ig = ctx.createRadialGradient(cx - islandR * 0.3, cy - islandR * 0.3, 2, cx, cy, islandR);
-  ig.addColorStop(0, "#B9E35A"); ig.addColorStop(1, P.grassDeep);
-  ctx.fillStyle = ig; ctx.beginPath(); ctx.arc(cx, cy, islandR, 0, Math.PI * 2); ctx.fill();
-  // small flower bed on the island
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2;
-    ctx.fillStyle = i % 2 ? "#fff3a8" : "#ffffff";
-    ctx.beginPath(); ctx.arc(cx + Math.cos(a) * islandR * 0.45, cy + Math.sin(a) * islandR * 0.45, Math.max(2, islandR * 0.06), 0, Math.PI * 2); ctx.fill();
-  }
+  // feeder arms + ring + exit stub, drawn as one shape: white walls first, then the floor
+  const { cx, cy, Ro, Ri, Rm, trackW } = L.island;
+  const paths = (c) => {
+    for (const arm of L.arms) {
+      c.beginPath(); c.moveTo(arm.pts[0].x, arm.pts[0].y);
+      for (const q of arm.pts) c.lineTo(q.x, q.y);
+      c.lineWidth = arm.w + c.__extra; c.stroke();
+    }
+    c.beginPath(); c.arc(cx, cy, Rm, 0, Math.PI * 2); c.lineWidth = trackW + c.__extra; c.stroke();
+    c.beginPath(); c.moveTo(cx, cy + Rm); c.lineTo(cx, L.laneBottom.y); c.lineWidth = trackW * 0.55 + c.__extra; c.stroke();
+  };
+  ctx.save();
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.shadowColor = "rgba(31,59,44,.28)"; ctx.shadowBlur = 8; ctx.shadowOffsetY = 4;
+  ctx.strokeStyle = "#FFFFFF"; ctx.__extra = 10; paths(ctx);
+  ctx.shadowColor = "transparent";
+  ctx.strokeStyle = "#E3E8EC"; ctx.__extra = 0; paths(ctx);
+  ctx.restore();
+  // the hole in the middle of the ring: grass with a white rim
+  ctx.fillStyle = "#FFFFFF"; ctx.beginPath(); ctx.arc(cx, cy, Ri + 1, 0, Math.PI * 2); ctx.fill();
+  const ig = ctx.createRadialGradient(cx - Ri * 0.3, cy - Ri * 0.3, 2, cx, cy, Ri);
+  ig.addColorStop(0, "#C4EA5E"); ig.addColorStop(1, P.grassDeep);
+  ctx.fillStyle = ig; ctx.beginPath(); ctx.arc(cx, cy, Ri - 4, 0, Math.PI * 2); ctx.fill();
   // blossom trees at each end of the road
-  const ts = clamp(Math.min(L.road.h * 0.26, (rd.w / 2 - Ruo) * 0.7), 12, 40);
+  const ts = clamp(Math.min(L.road.h * 0.26, (rd.w / 2 - Ro) * 0.25), 12, 40);
   drawTree(ctx, rd.x + ts * 0.85, rd.y - ts * 0.7, ts);
   drawTree(ctx, rd.x + rd.w - ts * 0.85, rd.y - ts * 0.7, ts);
 }

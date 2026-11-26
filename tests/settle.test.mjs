@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { initialState, applyMove, settle } from "../js/game.js";
 import { loadLevel, placeBus } from "./helpers.mjs";
 
-test("start of level 1: six people walk the circle, three wait in the queue, nobody boards", () => {
+test("start of level 1: all nine people walk the ring (it holds 24), nobody boards", () => {
   const s = initialState(loadLevel(1));
-  assert.equal(s.loop.length, 6);
-  assert.equal(s.queue.length, 3);
+  assert.equal(s.loopCapacity, 24);
+  assert.equal(s.loop.length, 9);
+  assert.equal(s.queue.length, 0);
   assert.deepEqual(s.bays, [null, null, null, null, null]);
   assert.equal(s.parked.length, 3);
 });

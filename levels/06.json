@@ -1,7 +1,7 @@
 {
   "id": 6,
   "name": "A new colour",
-  "loopCapacity": 6,
+  "loopCapacity": 24,
   "queue": ["red", "red", "red", "red", "blue", "blue", "blue", "blue", "green", "green", "green", "yellow", "yellow", "yellow", "blue", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "green", "green", "green", "blue", "yellow", "blue", "blue", "green"],
   "buses": [
     {"id": "g1", "colour": "green", "capacity": 3, "slot": "LW0"},

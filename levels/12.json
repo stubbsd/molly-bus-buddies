@@ -1,7 +1,7 @@
 {
   "id": 12,
   "name": "Molly's master plan",
-  "loopCapacity": 6,
+  "loopCapacity": 24,
   "queue": ["yellow", "yellow", "yellow", "pink", "pink", "yellow", "yellow", "red", "red", "red", "red", "red", "red", "green", "pink", "purple", "purple", "pink", "purple", "blue", "blue", "blue", "yellow", "green", "green", "green", "pink", "pink", "pink", "purple", "purple", "yellow", "yellow", "purple", "yellow", "yellow", "blue", "yellow", "yellow", "yellow", "yellow", "pink", "pink", "blue", "blue", "blue", "pink", "pink", "pink", "pink", "purple", "purple", "purple", "red", "red", "red"],
   "buses": [
     {"id": "k1", "colour": "pink", "capacity": 4, "slot": "LW0"},

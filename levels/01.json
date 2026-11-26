@@ -1,7 +1,7 @@
 {
   "id": 1,
   "name": "First ride",
-  "loopCapacity": 6,
+  "loopCapacity": 24,
   "queue": ["red", "red", "red", "yellow", "yellow", "yellow", "red", "red", "red"],
   "buses": [
     {"id": "r1", "colour": "red", "capacity": 3, "slot": "LW0"},

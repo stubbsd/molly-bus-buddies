@@ -25,7 +25,7 @@ for (const l of levels) {
   test(`level ${l.id} matches the schema`, () => {
     assert.equal(l.name, index[l.id - 1].name);
     assert.ok(Number.isInteger(l.loopCapacity) && l.loopCapacity > 0);
-    if (l.id >= 5) assert.ok(l.loopCapacity <= 8);
+    assert.equal(l.loopCapacity, 24); // the ring holds eight ranks of three
     assert.ok(l.queue.every((c) => COLOURS.includes(c)));
     const ids = new Set(), slots = new Set();
     for (const b of l.buses) {

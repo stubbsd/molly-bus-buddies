@@ -12,18 +12,18 @@ const ROOT = new URL("../", import.meta.url);
 // C colours, B buses, D blocking depth, mys mystery buses, bp bays needed at once,
 // caps allowed capacities, loop people on the circle at once.
 export const TARGETS = {
-  1: { C: 2, B: 3, D: 0, mys: 0, bp: [1], caps: [3], loop: 6 },
-  2: { C: 2, B: 4, D: 1, mys: 0, bp: [1], caps: [3], loop: 6 },
-  3: { C: 3, B: 5, D: 1, mys: 0, bp: [2], caps: [3, 4], loop: 6 },
-  4: { C: 3, B: 6, D: 2, mys: 0, bp: [2], caps: [3, 4], loop: 6 },
-  5: { C: 3, B: 7, D: 2, mys: 0, bp: [2, 3], caps: [3, 4, 6], loop: 6 },
-  6: { C: 4, B: 8, D: 2, mys: 1, bp: [3], caps: [3, 4, 6], loop: 6 },
-  7: { C: 4, B: 9, D: 3, mys: 1, bp: [3], caps: [3, 4, 6], loop: 6 },
-  8: { C: 4, B: 10, D: 3, mys: 2, bp: [3], caps: [3, 4, 6], loop: 6 },
-  9: { C: 5, B: 11, D: 3, mys: 2, bp: [3, 4], caps: [3, 4, 6], loop: 6 },
-  10: { C: 5, B: 12, D: 4, mys: 3, bp: [4], caps: [3, 4, 6], loop: 6 },
-  11: { C: 6, B: 13, D: 4, mys: 3, bp: [4], caps: [3, 4, 6], loop: 6 },
-  12: { C: 6, B: 14, D: 4, mys: 4, bp: [4], caps: [3, 4, 6], loop: 6 },
+  1: { C: 2, B: 3, D: 0, mys: 0, bp: [1], caps: [3], loop: 24 },
+  2: { C: 2, B: 4, D: 1, mys: 0, bp: [1], caps: [3], loop: 24 },
+  3: { C: 3, B: 5, D: 1, mys: 0, bp: [2], caps: [3, 4], loop: 24 },
+  4: { C: 3, B: 6, D: 2, mys: 0, bp: [2], caps: [3, 4], loop: 24 },
+  5: { C: 3, B: 7, D: 2, mys: 0, bp: [2, 3], caps: [3, 4, 6], loop: 24 },
+  6: { C: 4, B: 8, D: 2, mys: 1, bp: [3], caps: [3, 4, 6], loop: 24 },
+  7: { C: 4, B: 9, D: 3, mys: 1, bp: [3], caps: [3, 4, 6], loop: 24 },
+  8: { C: 4, B: 10, D: 3, mys: 2, bp: [3], caps: [3, 4, 6], loop: 24 },
+  9: { C: 5, B: 11, D: 3, mys: 2, bp: [3, 4], caps: [3, 4, 6], loop: 24 },
+  10: { C: 5, B: 12, D: 4, mys: 3, bp: [4], caps: [3, 4, 6], loop: 24 },
+  11: { C: 6, B: 13, D: 4, mys: 3, bp: [4], caps: [3, 4, 6], loop: 24 },
+  12: { C: 6, B: 14, D: 4, mys: 4, bp: [4], caps: [3, 4, 6], loop: 24 },
 };
 const COLS = ["LW", "LC", "RC", "RE"];
 const LETTER = { red: "r", yellow: "y", blue: "b", green: "g", purple: "p", pink: "k" };

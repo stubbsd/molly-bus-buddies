@@ -1,7 +1,7 @@
 {
   "id": 11,
   "name": "Pink too",
-  "loopCapacity": 6,
+  "loopCapacity": 24,
   "queue": ["purple", "purple", "purple", "yellow", "pink", "pink", "pink", "yellow", "yellow", "yellow", "yellow", "yellow", "pink", "pink", "pink", "blue", "green", "yellow", "yellow", "yellow", "yellow", "red", "red", "red", "yellow", "yellow", "yellow", "yellow", "yellow", "green", "blue", "blue", "green", "green", "yellow", "yellow", "yellow", "purple", "blue", "blue", "blue", "pink", "pink", "pink", "yellow", "yellow", "yellow", "purple", "purple", "purple", "purple", "purple", "purple", "purple", "purple"],
   "buses": [
     {"id": "y1", "colour": "yellow", "capacity": 6, "slot": "LW0"},
