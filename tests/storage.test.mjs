@@ -20,16 +20,17 @@ test("progress round-trips and unlocks the next level", () => {
   assert.ok(isUnlocked(defaultProgress(), 1));
 });
 
-test("v1 progress migrates: sound and unlocks kept, the old half-played board dropped", () => {
-  assert.equal(STORAGE_KEY, "mollysBusBuddies.v2");
+test("older progress migrates: sound and unlocks kept, the old half-played board dropped", () => {
+  assert.equal(STORAGE_KEY, "mollysBusBuddies.v3");
+  assert.deepEqual(LEGACY_KEYS, ["mollysBusBuddies.v2", "mollysBusBuddies.v1"]);
   const s = mem();
   s.setItem(LEGACY_KEYS[0], JSON.stringify({ soundMuted: true, completedLevels: [1, 2, 3], currentLevel: 4, inProgress: { levelId: 4, state: { queue: [] }, undoStack: [] } }));
   const p = loadProgress(s);
   assert.equal(p.soundMuted, true);
   assert.deepEqual(p.completedLevels, [1, 2, 3]);
   assert.equal(p.inProgress, null);
-  assert.ok(s.m.has(STORAGE_KEY), "migrated copy saved under the v2 key");
-  // v2 wins over v1 once present
+  assert.ok(s.m.has(STORAGE_KEY), "migrated copy saved under the v3 key");
+  // the current key wins once present
   saveProgress({ ...defaultProgress(), completedLevels: [1] }, s);
   assert.deepEqual(loadProgress(s).completedLevels, [1]);
 });

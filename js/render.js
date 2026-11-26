@@ -1,5 +1,5 @@
 // Canvas renderer: layout maths and original procedural artwork.
-import { SLOTS } from "./slots.js";
+import { BUS, lenOf } from "./park.js";
 
 export const COLOUR_HEX = {
   red: "#E23B2F", yellow: "#F5C518", blue: "#2F7DE1",
@@ -22,7 +22,7 @@ const rad = (d) => (d * Math.PI) / 180;
 
 // ---------------- layout ----------------
 
-export function computeLayout(w, h, insets, peopleCount = 30) {
+export function computeLayout(w, h, insets, level = null) {
   const st = insets.top, sb = insets.bottom;
   const landscape = w > h * 1.15 && w >= 700;
   const L = { w, h, landscape, insets };
@@ -34,7 +34,7 @@ export function computeLayout(w, h, insets, peopleCount = 30) {
     L.grass = { x: 0, y: 0, w, h: grassH };
     L.road = { x: 0, y: grassH, w, h: roadH };
     L.carArea = { x: 0, y: grassH + roadH, w, h: h - grassH - roadH };
-    L.car = { x: Math.max(insets.left, (w - Math.min(w, 760)) / 2), y: grassH + roadH + 8, w: Math.min(w, 760) - insets.left - insets.right, h: h - grassH - roadH - 8 - ctrlH };
+    L.car = { x: Math.max(insets.left, (w - Math.min(w, 760)) / 2) + 6, y: grassH + roadH + 10, w: Math.min(w, 760) - insets.left - insets.right - 12, h: h - grassH - roadH - 10 - ctrlH };
     L.hudBottom = st + 76;
   } else {
     const pw = Math.round(w * 0.5);
@@ -42,13 +42,13 @@ export function computeLayout(w, h, insets, peopleCount = 30) {
     L.grass = { x: 0, y: 0, w: pw, h: h - roadH - sb };
     L.road = { x: 0, y: h - roadH - sb, w: pw, h: roadH + sb };
     L.carArea = { x: pw, y: 0, w: w - pw, h };
-    L.car = { x: pw + 10, y: st + 74, w: w - pw - 20 - insets.right, h: h - st - 74 - ctrlH };
+    L.car = { x: pw + 14, y: st + 74, w: w - pw - 28 - insets.right, h: h - st - 74 - ctrlH };
     L.hudBottom = st + 80;
   }
   // Feeder + ring geometry inside the grass band, after the reference video: two
-  // feeder channels come down from the top edge on the left and right, curve in like
-  // a big U and merge into a thick ring (three people wide) round a small grass hole.
-  // The ring opens at the bottom onto the bay road.
+  // feeder channels come down on the left and right, curve in like a big U and merge
+  // into a thick ring (three people wide) round a small grass hole. The ring opens at
+  // the bottom onto the bay road. People stand packed shoulder to shoulder.
   const g = L.grass;
   const top = L.hudBottom + 2;
   const bottom = g.y + g.h - 4;
@@ -57,22 +57,44 @@ export function computeLayout(w, h, insets, peopleCount = 30) {
   const Ri = Ro - trackW;
   const lanes = 3;
   const laneW = (trackW - 6) / lanes;
-  const br = clamp(laneW * 0.53, 5, 24); // packed shoulder to shoulder, like the reference crowd
-  const step = laneW;
+  const br = clamp(laneW * 0.53, 5, 24);
+  const step = 2 * br * 0.9; // rows in the feeders overlap a touch, like a crowd
   const cx = g.x + g.w / 2;
   const cy = bottom - Ro;
   const Rm = (Ro + Ri) / 2;
   L.island = { cx, cy, Ro, Ri, Rm, trackW, lanes, laneW, R: Rm, islandR: Ri };
   L.br = br; L.step = step;
-  // ring lanes: inner to outer; ranks are spaced so the inner lane is packed
   L.ringR = [0, 1, 2].map((k) => Ri + 3 + laneW * (k + 0.5));
-  L.ringStepDeg = (step / L.ringR[0]) * (180 / Math.PI);
+  // Ring places, packed per lane, ordered from the door (6 o'clock) back round the ring
+  // clockwise: up the left side, over the top, down the right. f = share of the lap.
+  const slots = [];
+  L.ringR.forEach((r, k) => {
+    const n = Math.max(3, Math.floor((2 * Math.PI * r) / (2 * br * 0.96)));
+    for (let j = 0; j < n; j++) slots.push({ r, f: (j + (k % 2 ? 0.5 : 0.25)) / n });
+  });
+  slots.sort((a, b) => a.f - b.f || a.r - b.r);
+  L.ringSlots = slots;
+  L.ringCap = slots.length;
   L.door = { x: cx, y: cy + Ro - laneW * 0.4 };
   L.laneBottom = { x: cx, y: L.road.y + 6 };
-  // Feeder arms. Centre line from where it meets the ring back up past the top edge.
+  // Who waits in which feeder: rows of three take turns, left then right, so both
+  // feeders stay equally full and each colour band shows on both sides, as in the
+  // reference. Index = place in the level's whole line (0 = front).
+  const q = level ? level.queue : [];
+  L.armOf = [];
+  const count = [0, 0];
+  for (let i = 0; i < q.length; i++) {
+    if (i < L.ringCap) { L.armOf.push(-1); continue; }
+    const arm = Math.floor((i - L.ringCap) / lanes) % 2;
+    L.armOf.push(arm); count[arm]++;
+  }
+  // Feeder arms. Centre line from where it meets the ring back up the side. Each arm is
+  // just long enough for the people waiting in it at the start (or runs off the top).
   const armW = trackW;
-  const spread = Math.min(g.w / 2 - armW / 2 - 12, Ro * 2.05);
-  L.arms = [-1, 1].map((side) => {
+  const need = trackW * 0.5 + 4 + Math.ceil(Math.max(count[0], count[1], 3) / lanes) * step + br * 0.4;
+  const maxSpread = Math.min(g.w / 2 - armW / 2 - 12, Ro * 2.05);
+  const minSpread = Math.min(maxSpread, Ro + trackW / 2 + 10);
+  const build = (spread) => [-1, 1].map((side) => {
     const a = rad(side < 0 ? 160 : 20);
     const J = { x: cx + Rm * Math.cos(a), y: cy + Rm * Math.sin(a) };
     const inward = { x: -Math.cos(a), y: -Math.sin(a) };
@@ -84,11 +106,23 @@ export function computeLayout(w, h, insets, peopleCount = 30) {
       const u = i / 40, v = 1 - u;
       pts.push({ x: v * v * v * J.x + 3 * v * v * u * P1.x + 3 * v * u * u * P2.x + u * u * u * A.x, y: v * v * v * J.y + 3 * v * v * u * P1.y + 3 * v * u * u * P2.y + u * u * u * A.y });
     }
-    pts.push({ x: A.x, y: g.y - 900 });
     const cum = [0];
     for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
     return { side, pts, cum, J, A, w: armW };
   });
+  let arms = null;
+  for (let sp = maxSpread; sp >= minSpread - 1e-6; sp -= 4) {
+    arms = build(sp);
+    if (arms[0].cum[arms[0].cum.length - 1] <= need) break;
+  }
+  if (!arms) arms = build(minSpread);
+  for (const arm of arms) {
+    const bez = arm.cum[arm.cum.length - 1];
+    let endY = arm.A.y - Math.max(0, need - bez);
+    if (endY < g.y + br * 3) endY = g.y - 900; // runs off the top like the reference
+    if (endY < arm.A.y - 0.5) { arm.pts.push({ x: arm.A.x, y: endY }); arm.cum.push(bez + (arm.A.y - endY)); }
+  }
+  L.arms = arms;
   // Bays
   const rd = L.road;
   const usable = rd.w - 24;
@@ -102,25 +136,19 @@ export function computeLayout(w, h, insets, peopleCount = 30) {
     L.bays.push({ x, y, w: bayW, h: bayH, cx: x + bayW / 2, cy: y + bayH / 2 });
   }
   L.bayBus = { len: bayH * 0.84, wid: Math.min(bayW * 0.6, bayH * 0.42) };
-  // Parked buses: as large as possible without neighbours touching.
+  // Car park: the level's jam scaled to fill the band (never bigger than a bay bus).
+  const park = level?.park ?? { w: 10, h: 7 };
   const c = L.car;
-  const cs = 0.16 * c.w, rs = 0.18 * c.h;
-  const a40 = rad(40);
-  // perpendicular gap between parallel neighbours in a column (row step) and across columns
-  const perpRow = Math.abs(rs * Math.sin(a40) - 0.02 * c.w * Math.cos(a40));
-  const perpCol = cs * Math.cos(a40);
-  // Neighbours in a column may just touch, like toy buses parked nose to tail.
-  let W = Math.min(perpRow * 1.05, perpCol * 0.86, L.bayBus.wid * 1.05);
-  let Lb = Math.min(W * 2.3, L.bayBus.len * 1.1);
-  Lb = Math.min(Lb, (0.24 * c.w * 0.95 - 0.77 * W) / 0.64, (0.1 * c.h + 14) / 0.4);
-  W = Math.min(W, 50); Lb = Math.min(Lb, 118);
-  L.parkBus = { len: Lb, wid: W, hit: Math.max(22, W * 0.75) };
+  const sc = Math.min(c.w / park.w, c.h / park.h, (L.bayBus.wid * 1.1) / BUS.wid);
+  L.park = { s: sc, ox: c.x + (c.w - park.w * sc) / 2, oy: c.y + (c.h - park.h * sc) / 2, w: park.w * sc, h: park.h * sc };
+  L.parkBus = { len: BUS.len * sc, wid: BUS.wid * sc };
   return L;
 }
 
-export function slotPos(L, slotId) {
-  const s = SLOTS[slotId];
-  return { x: L.car.x + s.x * L.car.w, y: L.car.y + s.y * L.car.h, angle: s.angle };
+/** Where a parked bus is drawn: centre, angle and body size in CSS pixels. */
+export function busPos(L, b) {
+  const { s, ox, oy } = L.park;
+  return { x: ox + b.x * s, y: oy + b.y * s, angle: b.angle, len: lenOf(b) * s, wid: BUS.wid * s };
 }
 
 /** Point at distance s back from the ring along an arm's centre line, offset sideways. */
@@ -150,18 +178,27 @@ export function loopXY(L, angleDeg, r = L.ringR[1]) {
   return { x: cx + r * Math.cos(rad(angleDeg)), y: cy + r * Math.sin(rad(angleDeg)) };
 }
 
-/** Hit test parked buses: returns id of the closest bus whose (expanded) body contains the point. */
+/** Ring place i (0 = the front, at the door) as an angle (degrees) and radius. */
+export function ringSlot(L, i) {
+  const s = L.ringSlots[Math.min(i, L.ringSlots.length - 1)];
+  return { a: 90 + s.f * 360, r: s.r };
+}
+
+/**
+ * Hit test parked buses: the bus whose body (plus a small margin) holds the point;
+ * where margins overlap in the packed jam, the one the point is most inside wins.
+ */
 export function hitBus(L, parked, x, y) {
   let best = null, bestD = Infinity;
-  const { len, wid, hit } = L.parkBus;
   for (const b of parked) {
-    const p = slotPos(L, b.slot);
+    const p = busPos(L, b);
     const a = rad(p.angle);
     const dx = x - p.x, dy = y - p.y;
-    const lx = dx * Math.cos(a) + dy * Math.sin(a);
-    const ly = -dx * Math.sin(a) + dy * Math.cos(a);
-    if (Math.abs(lx) <= Math.max(wid / 2 + 4, hit) && Math.abs(ly) <= Math.max(len / 2 + 4, hit)) {
-      const d = Math.hypot(dx, dy);
+    const along = dx * Math.sin(a) - dy * Math.cos(a);
+    const across = dx * Math.cos(a) + dy * Math.sin(a);
+    const pad = 6;
+    if (Math.abs(along) <= p.len / 2 + pad && Math.abs(across) <= p.wid / 2 + pad) {
+      const d = Math.max(Math.abs(along) / (p.len / 2), Math.abs(across) / (p.wid / 2));
       if (d < bestD) { bestD = d; best = b.id; }
     }
   }
@@ -295,11 +332,17 @@ export function drawMysteryBus(ctx, x, y, angle, len, wid) {
   ctx.strokeStyle = "rgba(31,59,44,.2)";
   ctx.lineWidth = 1;
   ctx.stroke();
+  ctx.rotate(-rad(angle)); // keep the ? upright whichever way the bus faces
+  ctx.translate(-Math.sin(rad(angle)) * Lh * 0.1, Math.cos(rad(angle)) * Lh * 0.1);
   ctx.fillStyle = "#2A3340";
-  ctx.font = `800 ${Math.max(13, Wd * 0.48)}px ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", system-ui, sans-serif`;
+  ctx.font = `800 ${Math.max(11, Wd * 0.48)}px ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", system-ui, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("?", 0, Lh * 0.1);
+  ctx.fillText("?", 0, 1);
+  ctx.restore();
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rad(angle));
   ctx.fillStyle = "#e8eef3";
   ctx.beginPath(); ctx.arc(-Wd * 0.3, -Lh / 2 + Wd * 0.06, Wd * 0.07, 0, Math.PI * 2); ctx.arc(Wd * 0.3, -Lh / 2 + Wd * 0.06, Wd * 0.07, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
@@ -398,7 +441,29 @@ function drawTree(ctx, x, y, s) {
   }
 }
 
-export function drawBackground(ctx, L) {
+/** Length of feeder track (px along the arm) needed for n people waiting in it. */
+export function armNeed(L, n) {
+  return n > 0 ? L.island.trackW * 0.5 + 4 + Math.ceil(n / L.island.lanes) * L.step + L.br * 0.4 : 0;
+}
+
+/** Points of an arm's centre line from the ring out to distance len. */
+function armPts(arm, len) {
+  const out = [arm.pts[0]];
+  for (let i = 1; i < arm.pts.length; i++) {
+    if (arm.cum[i] <= len) { out.push(arm.pts[i]); continue; }
+    const a = arm.pts[i - 1], b = arm.pts[i];
+    const u = (len - arm.cum[i - 1]) / (arm.cum[i] - arm.cum[i - 1] || 1);
+    out.push({ x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u });
+    break;
+  }
+  return out;
+}
+
+/**
+ * Static scene. `armLens` (px, one per feeder) draws each feeder only as long as its
+ * line of people, so no empty feeder track shows; omit it for full-length feeders.
+ */
+export function drawBackground(ctx, L, armLens = null) {
   const { grass: g, road: rd, carArea: ca } = L;
   ctx.fillStyle = P.carpark; ctx.fillRect(0, 0, L.w, L.h);
   ctx.fillStyle = P.carpark; ctx.fillRect(ca.x, ca.y, ca.w, ca.h);
@@ -417,11 +482,14 @@ export function drawBackground(ctx, L) {
   // feeder arms + ring + exit stub, drawn as one shape: white walls first, then the floor
   const { cx, cy, Ro, Ri, Rm, trackW } = L.island;
   const paths = (c) => {
-    for (const arm of L.arms) {
-      c.beginPath(); c.moveTo(arm.pts[0].x, arm.pts[0].y);
-      for (const q of arm.pts) c.lineTo(q.x, q.y);
+    L.arms.forEach((arm, k) => {
+      const len = armLens ? armLens[k] : Infinity;
+      if (len <= 0) return;
+      const pts = armPts(arm, len);
+      c.beginPath(); c.moveTo(pts[0].x, pts[0].y);
+      for (const q of pts) c.lineTo(q.x, q.y);
       c.lineWidth = arm.w + c.__extra; c.stroke();
-    }
+    });
     c.beginPath(); c.arc(cx, cy, Rm, 0, Math.PI * 2); c.lineWidth = trackW + c.__extra; c.stroke();
     c.beginPath(); c.moveTo(cx, cy + Rm); c.lineTo(cx, L.laneBottom.y); c.lineWidth = trackW * 0.55 + c.__extra; c.stroke();
   };

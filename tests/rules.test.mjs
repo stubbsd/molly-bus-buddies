@@ -2,85 +2,125 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   initialState, applyMove, legalMoves, tapProblem, isWon, isLost, isStuck, isUnblocked, isRevealed,
-  peopleMatchSeats, createSession, sessionTap, sessionUndo, seatsLeft, frontColour,
+  peopleMatchSeats, createSession, sessionTap, sessionUndo, seatsLeft, frontColour, parkedFromLevel,
 } from "../js/game.js";
-import { SLOTS } from "../js/slots.js";
+import { BUS, lenOf, blocks, blockerMap, overlaps, busCorners, sweepCorners, peel, firstOverlap } from "../js/park.js";
 import { loadLevel, allLevels } from "./helpers.mjs";
 
-// Small hand-built levels so each rule is tested on its own.
-const lvl = (queue, buses, loopCapacity = 6) => ({ id: 99, name: "test", loopCapacity, queue, buses });
-const bus = (id, colour, slot, capacity = 3, mystery) => ({ id, colour, capacity, slot, ...(mystery ? { mystery: true } : {}) });
+// Small hand-built levels so each rule is tested on its own. Positions are in level
+// units; angle is degrees clockwise from up (the roof arrow).
+const lvl = (queue, buses, loopCapacity = 6) => ({ id: 99, name: "test", loopCapacity, park: { w: 40, h: 10 }, queue, buses });
+const bus = (id, colour, x, y = 5, angle = 0, capacity = 4, mystery) => ({ id, colour, capacity, x, y, angle, ...(mystery ? { mystery: true } : {}) });
 const many = (c, n) => Array(n).fill(c);
+// far apart, all facing up: every one free
+const apart = (k) => 3 * k + 2;
 
-// ---- 1. roof arrows and blocking ----
-test("every slot's roof arrow points towards the road, and the buses in front along it block", () => {
-  for (const [id, s] of Object.entries(SLOTS)) {
-    assert.ok(id.startsWith("L") ? s.angle > 0 : s.angle < 0, id + " arrow points to the middle road");
-    const row = Number(id.slice(2));
-    assert.deepEqual(s.exitBlockedBy, Array.from({ length: row }, (_, i) => id.slice(0, 2) + (row - 1 - i)));
+// ---- 1. roof arrows and blocking (real shapes) ----
+test("a bus is blocked exactly when another bus touches the strip ahead of its arrow", () => {
+  const a = bus("a", "red", 5, 5, 0);
+  const ahead = bus("b", "red", 5, 5 - BUS.len - 0.12, 0); // nose to tail in front
+  const behind = bus("c", "red", 5, 5 + BUS.len + 0.12, 0);
+  const beside = bus("d", "red", 5 + BUS.wid + 0.12, 5, 0); // side by side, a small gap
+  const farAhead = bus("e", "red", 5, -20, 90); // crossways, far up the road
+  assert.equal(blocks(ahead, a), true);
+  assert.equal(blocks(behind, a), false);
+  assert.equal(blocks(beside, a), false);
+  assert.equal(blocks(farAhead, a), true, "the strip runs all the way out");
+  assert.equal(blocks(a, ahead), false);
+  // turning a round changes who is in its way
+  const turned = { ...a, angle: 180 };
+  assert.equal(blocks(behind, turned), true);
+  assert.equal(blocks(ahead, turned), false);
+  // diagonal: the strip at 64 degrees clips a bus offset along it
+  const d = bus("f", "red", 0, 0, 64);
+  const ux = Math.sin((64 * Math.PI) / 180), uy = -Math.cos((64 * Math.PI) / 180);
+  assert.equal(blocks(bus("g", "red", ux * 3, uy * 3, 0), d), true);
+  assert.equal(blocks(bus("h", "red", -ux * 3, -uy * 3, 0), d), false);
+});
+
+test("touching is not overlapping, and longer buses carry more seats", () => {
+  const a = bus("a", "red", 0, 0, 0), b = bus("b", "red", BUS.wid, 0, 0);
+  assert.equal(overlaps(busCorners(a), busCorners(b)), false);
+  assert.ok(lenOf({ capacity: 4 }) < lenOf({ capacity: 6 }) && lenOf({ capacity: 6 }) < lenOf({ capacity: 8 }) && lenOf({ capacity: 8 }) < lenOf({ capacity: 10 }));
+  assert.equal(sweepCorners(a).length, 4);
+});
+
+test("the rules engine uses the same geometry: blockers come from the shapes", () => {
+  for (const l of allLevels()) {
+    const map = blockerMap(l.buses);
+    const parked = parkedFromLevel(l);
+    for (const b of parked) {
+      assert.deepEqual(b.blockers, map[b.id]);
+      const geom = l.buses.every((o) => o.id === b.id || !blocks(o, b));
+      assert.equal(isUnblocked(b, parked), geom, `level ${l.id} ${b.id}`);
+      // without the cached list the engine works it out from the shapes directly
+      const { blockers, ...plain } = b;
+      assert.equal(isUnblocked(plain, parked), geom);
+    }
   }
 });
 
-test("a bus with a bus in front of it on its arrow is blocked: tapping bumps, nothing moves, no undo step", () => {
-  const s = createSession(loadLevel(2)); // y2 at LW1 sits behind y1 at LW0
+test("a blocked bus bumps: nothing moves and there is no undo step", () => {
+  const level = lvl(many("red", 8), [bus("r1", "red", 5, 3), bus("r2", "red", 5, 3 + BUS.len + 0.12)]);
+  const s = createSession(level);
   const before = JSON.stringify(s.state);
-  assert.equal(tapProblem(s.state, "y2"), "blocked");
-  assert.ok(!legalMoves(s.state).some((b) => b.id === "y2"));
-  assert.deepEqual(sessionTap(s, "y2"), { moved: false, problem: "blocked" });
+  assert.equal(tapProblem(s.state, "r2"), "blocked");
+  assert.ok(!legalMoves(s.state).some((b) => b.id === "r2"));
+  assert.deepEqual(sessionTap(s, "r2"), { moved: false, problem: "blocked" });
   assert.equal(JSON.stringify(s.state), before);
   assert.equal(s.undoStack.length, 0);
-  assert.throws(() => applyMove(s.state, "y2"));
+  assert.throws(() => applyMove(s.state, "r2"));
+  // once the bus in front has gone, the one behind has a clear road
+  assert.equal(sessionTap(s, "r1").moved, true);
+  assert.equal(tapProblem(s.state, "r2"), null);
 });
 
-test("once the bus in front drives out, the one behind has a clear road", () => {
-  let s = initialState(loadLevel(2));
-  s = applyMove(s, "y1").state;
-  const y2 = s.parked.find((b) => b.id === "y2");
-  assert.ok(isUnblocked(y2, s.parked));
-  assert.equal(tapProblem(s, "y2"), null);
+test("every shipped car park: no overlaps, can be cleared, most buses start blocked", () => {
+  for (const l of allLevels()) {
+    assert.equal(firstOverlap(l.buses), null, `level ${l.id} overlap`);
+    const { layers, stuck } = peel(l.buses);
+    assert.deepEqual(stuck, [], `level ${l.id} can be cleared`);
+    assert.ok((l.buses.length - layers[0].length) * 2 > l.buses.length, `level ${l.id}: most start blocked`);
+  }
 });
 
 // ---- 2. only the front of the queue boards ----
 test("only the person at the front boards: a wrong colour at the front holds everyone up", () => {
-  const level = lvl(["yellow", ...many("red", 3), "yellow", "yellow"], [bus("r1", "red", "LW0"), bus("y1", "yellow", "RE0")]);
-  let s = initialState(level);
+  const level = lvl(["yellow", ...many("red", 3), "yellow", "yellow"], [bus("r1", "red", apart(0), 5, 0, 3), bus("y1", "yellow", apart(1), 5, 0, 3)]);
+  const s = initialState(level);
   assert.equal(frontColour(s), "yellow");
   const r = applyMove(s, "r1");
-  // three reds are walking right behind the yellow, but nobody may overtake her
   assert.equal(r.events.filter((e) => e.type === "board").length, 0);
   assert.equal(r.state.bays[0].filled, 0);
   assert.deepEqual(r.state.loop, ["yellow", "red", "red", "red", "yellow", "yellow"]);
-  // a yellow bus lets the front yellow on; then the reds board in turn
   const r2 = applyMove(r.state, "y1");
   assert.deepEqual(r2.events.filter((e) => e.type === "board").map((e) => e.colour), ["yellow", "red", "red", "red", "yellow", "yellow"]);
   assert.ok(isWon(r2.state));
 });
 
 test("people walk onto the circle in queue order, at most loopCapacity at once", () => {
-  const level = lvl([...many("red", 6), ...many("blue", 3)], [bus("r1", "red", "LW0", 6), bus("b1", "blue", "RE0")], 4);
+  const level = lvl([...many("red", 6), ...many("blue", 4)], [bus("r1", "red", apart(0), 5, 0, 6), bus("b1", "blue", apart(1))], 4);
   const s = initialState(level);
   assert.deepEqual(s.loop, many("red", 4));
-  assert.equal(s.queue.length, 5);
+  assert.equal(s.queue.length, 6);
 });
 
 // ---- 3. seat countdowns ----
 test("the countdown starts at capacity, drops by one per person, and the bus leaves at 0", () => {
-  const level = lvl([...many("red", 4), ...many("blue", 6)], [bus("r1", "red", "LW0", 6), bus("b1", "blue", "RE0", 4)]);
+  const level = lvl([...many("red", 4), ...many("blue", 4), "red", "red"], [bus("r1", "red", apart(0), 5, 0, 6), bus("b1", "blue", apart(1), 5, 0, 4)]);
   const r = applyMove(initialState(level), "r1");
   const bay = r.state.bays[0];
   assert.equal(bay.capacity, 6);
-  assert.equal(seatsLeft(bay), 2); // four reds hopped on
-  assert.equal(seatsLeft({ capacity: 6, filled: 0 }), 6);
+  assert.equal(seatsLeft(bay), 2);
   const r2 = applyMove(r.state, "b1");
-  // four blues fill b1 to 0 and it departs, freeing its bay; r1 still waits on 2
   assert.ok(r2.events.some((e) => e.type === "depart" && e.busId === "b1"));
-  assert.equal(r2.state.bays[1], null);
-  assert.equal(seatsLeft(r2.state.bays[0]), 2);
+  assert.ok(r2.events.some((e) => e.type === "depart" && e.busId === "r1"));
+  assert.ok(isWon(r2.state));
 });
 
 // ---- 4. mystery buses ----
 test("a mystery bus hides its colour until its road is clear, then shows it", () => {
-  const level = lvl([...many("red", 3), ...many("blue", 3)], [bus("r1", "red", "LW0"), bus("b1", "blue", "LW1", 3, true)]);
+  const level = lvl([...many("red", 4), ...many("blue", 4)], [bus("r1", "red", 5, 3), bus("b1", "blue", 5, 3 + BUS.len + 0.12, 0, 4, true)]);
   let s = initialState(level);
   const hidden = s.parked.find((b) => b.id === "b1");
   assert.equal(hidden.mystery, true);
@@ -92,22 +132,21 @@ test("a mystery bus hides its colour until its road is clear, then shows it", ()
   assert.ok(isWon(s));
 });
 
-test("on every shipped level, mystery buses start hidden and only from level 6", () => {
+test("on every shipped level, mystery buses start hidden, from level 6 on", () => {
   for (const l of allLevels()) {
     const s = initialState(l);
-    for (const b of s.parked.filter((x) => x.mystery)) {
-      assert.ok(l.id >= 6, `level ${l.id} has a mystery bus`);
-      assert.equal(isRevealed(b, s.parked), false, `level ${l.id} ${b.id} starts hidden`);
-    }
+    const mys = s.parked.filter((x) => x.mystery);
+    if (l.id < 6) assert.equal(mys.length, 0, `level ${l.id}`);
+    else assert.ok(mys.length > 0, `level ${l.id} has mystery buses`);
+    for (const b of mys) assert.equal(isRevealed(b, s.parked), false, `level ${l.id} ${b.id} starts hidden`);
   }
 });
 
 // ---- 5. out of room ----
 function fiveFullBays() {
-  // the front person is green, so nobody can board any of these five buses
-  const level = lvl(["green", ...many("red", 15), ...many("blue", 3), "green", "green"], [
-    bus("r1", "red", "LW0"), bus("r2", "red", "LC0"), bus("r3", "red", "RC0"),
-    bus("r4", "red", "RE0"), bus("r5", "red", "LW1"), bus("b1", "blue", "LC1"), bus("g1", "green", "RC1"),
+  const level = lvl(["green", ...many("red", 20), ...many("blue", 4), ...many("green", 3)], [
+    ...["r1", "r2", "r3", "r4", "r5"].map((id, k) => bus(id, "red", apart(k))),
+    bus("b1", "blue", apart(5)), bus("g1", "green", apart(6)),
   ]);
   const s = createSession(level);
   for (const id of ["r1", "r2", "r3", "r4", "r5"]) assert.equal(sessionTap(s, id).moved, true);
@@ -129,7 +168,6 @@ test("sending another bus out when every bay is full loses; the bus stays put an
   const r = sessionTap(s, "b1");
   assert.equal(r.moved, true);
   assert.equal(r.lost, true);
-  assert.equal(isLost(s.state), true);
   assert.deepEqual(s.state.lost, { busId: "b1" });
   assert.ok(s.state.parked.some((b) => b.id === "b1"));
   assert.equal(isWon(s.state), false);
@@ -142,19 +180,20 @@ test("sending another bus out when every bay is full loses; the bus stays put an
 
 test("a blocked bus still only bumps when the bays are full (it is not sent out)", () => {
   const s = fiveFullBays();
-  s.state.parked.push({ id: "x", colour: "green", capacity: 3, slot: "RC2", mystery: false });
+  const g1 = s.state.parked.find((b) => b.id === "g1");
+  s.state.parked.push({ id: "x", colour: "green", capacity: 4, x: g1.x, y: g1.y + BUS.len + 0.12, angle: 0, mystery: false });
   assert.equal(tapProblem(s.state, "x"), "blocked");
   assert.equal(sessionTap(s, "x").moved, false);
   assert.equal(isLost(s.state), false);
 });
 
 test("win is detected only when queue, loop, bays and car park are all empty", () => {
-  let s = initialState(loadLevel(1));
+  const level = lvl([...many("red", 4), ...many("yellow", 4)], [bus("r1", "red", apart(0)), bus("y1", "yellow", apart(1))]);
+  let s = initialState(level);
   assert.equal(isWon(s), false);
-  for (const id of ["r1", "r2"]) { s = applyMove(s, id).state; assert.equal(isWon(s), false); }
-  s = applyMove(s, "y1").state;
-  assert.equal(isWon(s), true);
-  assert.equal(isWon({ ...s, parked: [{ id: "x", colour: "red", capacity: 3, slot: "LW0" }] }), false);
+  s = applyMove(s, "r1").state; assert.equal(isWon(s), false);
+  s = applyMove(s, "y1").state; assert.equal(isWon(s), true);
+  assert.equal(isWon({ ...s, parked: [bus("x", "red", 1)] }), false);
   assert.equal(isWon({ ...s, loop: ["red"] }), false);
   assert.equal(isWon({ ...s, lost: { busId: "x" } }), false);
 });

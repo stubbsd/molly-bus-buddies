@@ -3,7 +3,7 @@ import {
   createSession, sessionTap, sessionUndo, sessionRestart, isWon, isStuck, isLost, isRevealed, keyOf, clone,
 } from "./game.js";
 import {
-  computeLayout, slotPos, queuePoint, loopXY, hitBus, drawBead, drawBus, drawBackground,
+  computeLayout, busPos, ringSlot, queuePoint, loopXY, hitBus, armNeed, drawBead, drawBus, drawBackground,
   drawMysteryBus, drawCountdown, drawFrontGlow, drawBumpBurst,
 } from "./render.js";
 import { loadProgress, saveProgress, isUnlocked } from "./storage.js";
@@ -38,6 +38,7 @@ const D = {
 
 const person = (colour) => ({ pid: ++pid, colour });
 const rad = (d) => (d * Math.PI) / 180;
+const norm = (a) => ((((a + 180) % 360) + 360) % 360) - 180; // -180..180
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
 // Animation timings (ms). v1 -> v2: bus to bay 750 -> 360, depart 750 -> 360,
 // blocked shake 260 -> bump 320. People stay readable: hop 560, 150 between boarders.
@@ -47,42 +48,44 @@ let loseTimer = 0;
 
 const busy = () => D.events.length > 0 || D.flyers.length > 0 || D.ghosts.some((g) => g.kind === "toBay");
 
-// The ring: people walk three abreast as one crowd, the front rank leading clockwise.
-function ringSpacing(n) { return Math.min(L.ringStepDeg, 360 / Math.max(1, Math.ceil(n / 3))); }
-function loopTarget(i, n) {
-  return { a: 90 - ringSpacing(n) * (Math.floor(i / 3) + 0.5) + D.phase, r: L.ringR[i % 3] };
+// Everyone still waiting is one line: D.loop (on the ring, engine side) then D.queue.
+// On screen the first L.ringCap people fill the ring, packed from the door back round
+// the lap; the rest wait in the two feeders (L.armOf says which, by place in the
+// level's whole line). When the front person hops on, everyone shuffles up one place.
+const line = () => D.loop.concat(D.queue);
+const boardedSoFar = () => session.level.queue.length - D.loop.length - D.queue.length;
+
+function lineTargets() {
+  const all = line();
+  const off = boardedSoFar();
+  const n = [0, 0];
+  return all.map((p, i) => {
+    if (i < L.ringCap) { const t = ringSlot(L, i); return { mode: "l", a: t.a, r: t.r }; }
+    const arm = Math.max(0, L.armOf[off + i] ?? 0);
+    const q = queuePoint(L, arm, n[arm]++);
+    return { mode: "q", x: q.x, y: q.y };
+  });
 }
 
-// The queue waits in two feeder arms like the reference: colour groups take turns,
-// first group on the left, next on the right, and so on (stable for the whole level).
-let armOfIndex = [];
-function computeArms(level) {
-  armOfIndex = []; let arm = 0;
-  level.queue.forEach((c, i) => { if (i > 0 && c !== level.queue[i - 1]) arm = 1 - arm; armOfIndex.push(arm); });
-}
-function queueTargets() {
-  const n = [0, 0];
-  return D.queue.map((p) => queuePoint(L, p.arm, n[p.arm]++));
+function placeNow(per, t) {
+  per.mode = t.mode;
+  if (t.mode === "l") { per.a = t.a; per.r = t.r; Object.assign(per, loopXY(L, per.a, per.r)); } else { per.x = t.x; per.y = t.y; }
 }
 
 function rebuildDisplay() {
   const s = session.state;
-  computeArms(session.level);
-  const offset = session.level.queue.length - s.queue.length;
-  D.queue = s.queue.map((c, i) => ({ ...person(c), arm: armOfIndex[offset + i] ?? 0 }));
+  D.queue = s.queue.map(person);
   D.loop = s.loop.map(person);
   D.persons = new Map();
-  const qt = queueTargets();
-  D.queue.forEach((p, i) => { const q = qt[i]; D.persons.set(p.pid, { mode: "q", x: q.x, y: q.y, a: 0, r: 0 }); });
-  D.loop.forEach((p, i) => { const t = loopTarget(i, D.loop.length); const q = loopXY(L, t.a, t.r); D.persons.set(p.pid, { mode: "l", x: q.x, y: q.y, a: t.a, r: t.r }); });
+  const all = line();
+  lineTargets().forEach((t, i) => { const per = { mode: t.mode, x: 0, y: 0, a: 0, r: 0 }; placeNow(per, t); D.persons.set(all[i].pid, per); });
   D.bays = s.bays.map((b) => (b ? { id: b.id, colour: b.colour, capacity: b.capacity, filled: b.filled, pending: 0 } : null));
   D.ghosts = []; D.flyers = []; D.events = []; D.pendingSettle = false;
 }
 
 function snapPositions() {
-  const qt = queueTargets();
-  D.queue.forEach((p, i) => { Object.assign(D.persons.get(p.pid), { x: qt[i].x, y: qt[i].y }); });
-  D.loop.forEach((p, i) => { const per = D.persons.get(p.pid); const t = loopTarget(i, D.loop.length); per.a = t.a; per.r = t.r; Object.assign(per, loopXY(L, per.a, per.r)); });
+  const all = line();
+  lineTargets().forEach((t, i) => placeNow(D.persons.get(all[i].pid), t));
 }
 
 // ---------------- layout / resize ----------------
@@ -100,12 +103,32 @@ function resize() {
   const w = window.innerWidth, h = window.innerHeight;
   dpr = Math.min(window.devicePixelRatio || 1, 3);
   canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
-  L = computeLayout(w, h, readInsets(), session ? session.level.queue.length : 30);
+  L = computeLayout(w, h, readInsets(), session ? session.level : null);
   document.body.classList.toggle("landscape", L.landscape);
   bg = document.createElement("canvas");
   bg.width = canvas.width; bg.height = canvas.height;
-  const b = bg.getContext("2d"); b.scale(dpr, dpr); drawBackground(b, L);
+  bgKey = "";
   if (session) snapPositions();
+  refreshBackground();
+}
+
+// Feeders are drawn only as long as the line of people in them (redrawn when a row
+// of three leaves), so there is never empty feeder track on show.
+let bgKey = "";
+function refreshBackground() {
+  if (!bg || !L) return;
+  const n = [0, 0];
+  if (session) {
+    const off = boardedSoFar(), all = line();
+    for (let i = L.ringCap; i < all.length; i++) n[Math.max(0, L.armOf[off + i] ?? 0)]++;
+  }
+  const lens = n.map((c) => armNeed(L, c));
+  const key = lens.map((x) => Math.round(x)).join(",");
+  if (key === bgKey) return;
+  bgKey = key;
+  const b = bg.getContext("2d");
+  b.setTransform(1, 0, 0, 1, 0, 0); b.clearRect(0, 0, bg.width, bg.height);
+  b.scale(dpr, dpr); drawBackground(b, L, lens);
 }
 window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", () => setTimeout(resize, 200));
@@ -122,18 +145,14 @@ function frame(now) {
 }
 
 function step(now, dt) {
-  D.phase += RM() ? 0 : (360 / 9) * dt; // about nine seconds a lap
   const speed = RM() ? 0.15 : 1;
   // play out settle events
   while (D.events.length && now >= D.nextAt) {
     const e = D.events[0];
     const arriving = D.ghosts.some((g) => g.kind === "toBay" && g.bay === e.bay);
     if (e.type === "enter") {
-      const p = D.queue.shift(); D.loop.push(p);
-      const per = D.persons.get(p.pid); per.mode = "l";
-      per.a = (Math.atan2(per.y - L.island.cy, per.x - L.island.cx) * 180) / Math.PI;
-      per.r = Math.hypot(per.y - L.island.cy, per.x - L.island.cx);
-      D.nextAt = now + T.enter * speed;
+      D.loop.push(D.queue.shift()); // same place in the line, so nobody jumps
+      D.nextAt = now;
     } else if (e.type === "board") {
       if (arriving) break;
       const p = D.loop.shift();
@@ -171,21 +190,24 @@ function step(now, dt) {
   D.ghosts = D.ghosts.filter((g) => !g.done);
   // people glide towards their places
   const k = RM() ? 1 : 1 - Math.exp(-dt * 9);
-  const qt = queueTargets();
-  D.queue.forEach((p, i) => {
-    const per = D.persons.get(p.pid); const q = qt[i];
-    per.x += (q.x - per.x) * k; per.y += (q.y - per.y) * k;
-  });
-  const n = D.loop.length, sp = ringSpacing(n);
-  D.loop.forEach((p, i) => {
-    const per = D.persons.get(p.pid);
-    const tg = loopTarget(i, n);
-    let delta = (((tg.a - per.a) % 360) + 360) % 360;
-    if (delta > 360 - 0.75 * sp) delta -= 360;
+  const all = line();
+  lineTargets().forEach((t, i) => {
+    const per = D.persons.get(all[i].pid);
+    if (!per) return;
+    if (t.mode === "q") {
+      per.mode = "q";
+      per.x += (t.x - per.x) * k; per.y += (t.y - per.y) * k;
+      return;
+    }
+    if (per.mode !== "l") { // stepping off a feeder onto the ring
+      per.mode = "l";
+      per.a = (Math.atan2(per.y - L.island.cy, per.x - L.island.cx) * 180) / Math.PI;
+      per.r = Math.hypot(per.y - L.island.cy, per.x - L.island.cx);
+    }
+    let delta = ((((t.a - per.a) % 360) + 540) % 360) - 180;
     per.a += delta * k;
-    per.r += (tg.r - per.r) * k;
-    const q = loopXY(L, per.a, per.r);
-    per.x = q.x; per.y = q.y;
+    per.r += (t.r - per.r) * k;
+    Object.assign(per, loopXY(L, per.a, per.r));
   });
   // confetti
   for (const c of D.confetti) { c.vy += 600 * dt; c.x += c.vx * dt; c.y += c.vy * dt; c.life -= dt; }
@@ -194,18 +216,22 @@ function step(now, dt) {
 }
 
 function draw(now) {
+  refreshBackground();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.drawImage(bg, 0, 0);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const br = L.br;
-  for (let i = D.queue.length - 1; i >= 0; i--) {
-    const p = D.queue[i]; const per = D.persons.get(p.pid);
-    drawBead(ctx, p.colour, per.x, per.y, br, dpr);
-  }
+  const all = line();
+  for (let i = all.length - 1; i >= 1; i--) { const per = D.persons.get(all[i].pid); if (per) drawBead(ctx, all[i].colour, per.x, per.y, br, dpr); }
   // the person at the front of the line glows: only they can board
-  const front = D.loop[0];
-  if (front && !session.state.lost) { const per = D.persons.get(front.pid); drawFrontGlow(ctx, per.x, per.y, br * (RM() ? 1.15 : 1.15 + 0.12 * Math.sin(now / 180))); }
-  for (let i = D.loop.length - 1; i >= 0; i--) { const p = D.loop[i]; const per = D.persons.get(p.pid); drawBead(ctx, p.colour, per.x, per.y, br, dpr); }
+  const front = all[0];
+  if (front) {
+    const per = D.persons.get(front.pid);
+    if (per) {
+      if (!session.state.lost) drawFrontGlow(ctx, per.x, per.y, br * (RM() ? 1.15 : 1.15 + 0.12 * Math.sin(now / 180)));
+      drawBead(ctx, front.colour, per.x, per.y, br, dpr);
+    }
+  }
   // bay buses
   D.bays.forEach((b, i) => {
     if (!b) return;
@@ -217,55 +243,57 @@ function draw(now) {
   // parked buses
   const parked = session.state.parked;
   const lostId = session.state.lost?.busId;
-  const drawOrder = parked.filter((b) => b.id !== lostId).sort((a, b) => slotPos(L, b.slot).y - slotPos(L, a.slot).y);
+  const drawOrder = parked.filter((b) => b.id !== lostId).sort((a, b) => a.y - b.y);
   const bursts = [];
   for (const b of drawOrder) {
-    const p = slotPos(L, b.slot);
+    const p = busPos(L, b);
     let ang = p.angle, x = p.x, y = p.y;
     const st = D.shakes.get(b.id);
     if (st) {
       // bump: nudge forward along the roof arrow into the bus in front, then settle back
       const t = (now - st) / (T.bump * (RM() ? 0.6 : 1));
       if (t < 1) {
-        const push = RM() ? 0 : Math.sin(Math.min(1, t * 1.6) * Math.PI) * L.parkBus.len * 0.16;
+        const push = RM() ? 0 : Math.sin(Math.min(1, t * 1.6) * Math.PI) * p.len * 0.16;
         const hx = Math.sin(rad(p.angle)), hy = -Math.cos(rad(p.angle));
         x += hx * push; y += hy * push;
         ang += RM() ? 0 : Math.sin(t * Math.PI * 4) * 4 * (1 - t);
-        if (t > 0.12 && t < 0.85) bursts.push({ x: x + hx * L.parkBus.len * 0.55, y: y + hy * L.parkBus.len * 0.55, s: 0.8 + 0.3 * Math.sin(t * Math.PI) });
+        if (t > 0.12 && t < 0.85) bursts.push({ x: x + hx * p.len * 0.55, y: y + hy * p.len * 0.55, s: 0.8 + 0.3 * Math.sin(t * Math.PI) });
       } else D.shakes.delete(b.id);
     }
-    if (isRevealed(b, parked)) drawBus(ctx, x, y, ang, L.parkBus.len, L.parkBus.wid, b.colour);
-    else drawMysteryBus(ctx, x, y, ang, L.parkBus.len, L.parkBus.wid);
+    if (isRevealed(b, parked)) drawBus(ctx, x, y, ang, p.len, p.wid, b.colour);
+    else drawMysteryBus(ctx, x, y, ang, p.len, p.wid);
   }
   for (const s of bursts) drawBumpBurst(ctx, s.x, s.y, s.s);
   // the bus that had nowhere to go waits just short of the full bays
   if (lostId) {
     const b = parked.find((x) => x.id === lostId);
     if (b) {
-      const from = slotPos(L, b.slot);
+      const from = busPos(L, b);
       const lt = D.lostAt ? Math.min(1, (now - D.lostAt) / T.toBay) : 1;
       const u = ease(lt);
       // portrait: it pulls up just under the road; landscape: it heads towards the bays and stops short
       const to = L.landscape
         ? { x: from.x + (L.bays[2].cx - from.x) * 0.4, y: from.y + (L.bays[2].cy - from.y) * 0.4 }
-        : { x: L.bays[2].cx, y: L.road.y + L.road.h + L.parkBus.len * 0.5 };
+        : { x: L.bays[2].cx, y: L.road.y + L.road.h + from.len * 0.5 };
       const c = { x: to.x, y: from.y };
       const gx = (1 - u) * (1 - u) * from.x + 2 * (1 - u) * u * c.x + u * u * to.x;
       const gy = (1 - u) * (1 - u) * from.y + 2 * (1 - u) * u * c.y + u * u * to.y;
-      drawBus(ctx, gx, gy, from.angle * (1 - u * 0.75), L.parkBus.len, L.parkBus.wid, b.colour);
+      drawBus(ctx, gx, gy, norm(from.angle) * (1 - u * 0.75), from.len, from.wid, b.colour);
     }
   }
   // ghosts
   for (const g of D.ghosts) {
     const t = Math.min(1, (now - g.t0) / g.dur), e = ease(t);
     if (g.kind === "toBay") {
+      // drive out along the roof arrow, then swing round to the bay
       const to = L.bays[g.bay]; const ty = to.cy - to.h * 0.07;
-      const c = { x: to.cx, y: g.from.y };
+      const hx = Math.sin(rad(g.from.angle)), hy = -Math.cos(rad(g.from.angle));
+      const c = { x: g.from.x + hx * g.from.len * 1.6, y: g.from.y + hy * g.from.len * 1.6 };
       const x = (1 - e) * (1 - e) * g.from.x + 2 * (1 - e) * e * c.x + e * e * to.cx;
       const y = (1 - e) * (1 - e) * g.from.y + 2 * (1 - e) * e * c.y + e * e * ty;
-      const len = L.parkBus.len + (L.bayBus.len - L.parkBus.len) * e;
-      const wid = L.parkBus.wid + (L.bayBus.wid - L.parkBus.wid) * e;
-      drawBus(ctx, x, y, g.from.angle * (1 - e), len, wid, g.bus.colour);
+      const len = g.from.len + (L.bayBus.len - g.from.len) * e;
+      const wid = g.from.wid + (L.bayBus.wid - g.from.wid) * e;
+      drawBus(ctx, x, y, norm(g.from.angle) * (1 - e), len, wid, g.bus.colour);
     } else {
       const bay = L.bays[g.bay];
       ctx.save(); ctx.globalAlpha = 1 - t;
@@ -333,7 +361,7 @@ function onTap(x, y) {
     showOutOfRoom(RM() ? 150 : T.loseCard);
     return;
   }
-  const from = slotPos(L, bus.slot);
+  const from = busPos(L, bus);
   const now = performance.now();
   const dur = RM() ? 200 : T.toBay;
   D.ghosts.push({ kind: "toBay", bus, from, bay: r.bay, t0: now, dur });
@@ -472,7 +500,7 @@ window.addEventListener("pagehide", save);
 // Small hook for automated checks (screenshots, offline test). Harmless in play.
 window.__busBuddies = {
   start: (id) => startLevel(id, false),
-  tap: (id) => { const p = slotPos(L, session.state.parked.find((b) => b.id === id).slot); onTap(p.x, p.y); },
+  tap: (id) => { const p = busPos(L, session.state.parked.find((b) => b.id === id)); onTap(p.x, p.y); },
   get state() { return session && clone(session.state); },
   get busy() { return busy(); },
 };

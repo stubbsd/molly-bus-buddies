@@ -1,7 +1,8 @@
 // Molly's Bus Buddies — official rules (v2: roof arrows, front-of-queue boarding,
 // seat countdowns, mystery buses, out-of-room). Pure functions, no DOM.
 // Shared by the browser game, the solver (tools/solve.mjs) and the tests.
-import { SLOTS, BAY_COUNT } from "./slots.js";
+import { BAY_COUNT } from "./slots.js";
+import { blockerMap, blocks, peel } from "./park.js";
 
 // ---------- level helpers ----------
 
@@ -32,14 +33,16 @@ export function queueConflicts(queue) {
   return runs - new Set(queue).size;
 }
 
+/** Waves needed to clear the car park when nothing else matters (0 = all free at the start). */
 export function maxBlockingDepth(buses) {
-  const occ = new Set(buses.map((b) => b.slot));
-  let d = 0;
-  for (const b of buses) {
-    const n = SLOTS[b.slot].exitBlockedBy.filter((s) => occ.has(s)).length;
-    if (n > d) d = n;
-  }
-  return d;
+  const { layers, stuck } = peel(buses);
+  return stuck.length ? Infinity : layers.length - 1;
+}
+
+/** How many buses cannot drive out at the start. */
+export function blockedAtStart(buses) {
+  const map = blockerMap(buses);
+  return buses.filter((b) => map[b.id].length > 0).length;
 }
 
 // ---------- state ----------
@@ -126,7 +129,7 @@ export function initialState(level) {
     tick: 0,
     queue: level.queue.slice(),
     loop: [],
-    parked: level.buses.map((b) => ({ id: b.id, colour: b.colour, capacity: b.capacity, slot: b.slot, mystery: b.mystery === true })),
+    parked: parkedFromLevel(level),
     bays: new Array(BAY_COUNT).fill(null),
     departed: [],
     lost: null,
@@ -135,10 +138,22 @@ export function initialState(level) {
   return state;
 }
 
+/** Parked buses for a level, each carrying the ids of the buses in its way (geometry is fixed). */
+export function parkedFromLevel(level) {
+  const map = blockerMap(level.buses);
+  return level.buses.map((b) => ({
+    id: b.id, colour: b.colour, capacity: b.capacity, x: b.x, y: b.y, angle: b.angle,
+    mystery: b.mystery === true, blockers: map[b.id],
+  }));
+}
+
+/** A bus can drive out when no parked bus touches the strip ahead of it (js/park.js). */
 export function isUnblocked(bus, parked) {
-  const slot = SLOTS[bus.slot];
-  if (!slot) throw new Error("unknown slot " + bus.slot);
-  for (const s of slot.exitBlockedBy) if (parked.some((b) => b.slot === s)) return false;
+  if (Array.isArray(bus.blockers)) {
+    for (const b of parked) if (b.id !== bus.id && bus.blockers.includes(b.id)) return false;
+    return true;
+  }
+  for (const b of parked) if (b.id !== bus.id && blocks(b, bus)) return false;
   return true;
 }
 

@@ -102,8 +102,8 @@ await shot("02-iphone-level1.png");
   await tapAll(l8.slice(0, 3));
   await sleep(300);
   const st = await evaluate("window.__busBuddies.state");
-  const blocked = st.parked.find((b) => b.slot.endsWith("1") || b.slot.endsWith("2"));
-  const { tapProblem } = await import("../js/game.js");
+  const { tapProblem, isUnblocked: free } = await import("../js/game.js");
+  const blocked = st.parked.find((b) => !free(b, st.parked) && !b.mystery);
   if (blocked) { console.log("bump tap on", blocked.id, "->", tapProblem(st, blocked.id)); await evaluate(`window.__busBuddies.tap('${blocked.id}'); true`); }
   await shot("03-iphone-level8-midgame.png");
   await idle();
@@ -114,7 +114,7 @@ await go(BASE + "?level=8", 820, 1180); await sleep(1200);
 await shot("04-ipad-portrait-level8.png");
 await go(BASE + "?level=1", 1180, 820); await sleep(1200);
 await shot("05-ipad-landscape-level1.png");
-// 6. level 12 on iPhone (deepest car park, four mystery buses)
+// 6. level 12 on iPhone (the biggest jam: 36 buses, eight mystery buses)
 await go(BASE + "?level=12", 390, 844); await sleep(1200);
 await shot("06-iphone-level12.png");
 // 7. bays full: the stuck banner, then sending one more bus out -> gentle out-of-room card
@@ -154,16 +154,15 @@ const winCard = await evaluate("document.getElementById('card-title').textConten
 console.log("level 1 win card:", winCard);
 await shot("10-iphone-level1-win.png");
 
-// Play level 12 through the UI along the solver's shortest path, with a reload half way (resume check).
-const report = (await import("node:fs")).readFileSync(new URL("../tools/solver-report.md", import.meta.url), "utf8");
-const path12 = report.split("### Level 12")[1].match(/shortest path: `([^`]+)`/)[1].split(", ");
+// Play level 12 through the UI along the solver's path, with a reload half way (resume check).
+const path12 = analyseLevel(readLevel(12)).path;
 await go(BASE + "?level=12", 390, 844); await sleep(600);
 for (const [i, id] of path12.entries()) {
   if (i === 7) { await go(BASE, 390, 844); await evaluate("document.getElementById('btn-play').click(); true"); await sleep(1200); }
   await evaluate(`window.__busBuddies.tap('${id}'); true`); await idle();
 }
 await sleep(1800);
-console.log("level 12 via UI (reload after 7 moves):", await evaluate("document.getElementById('card-title').textContent + ' | done=' + JSON.parse(localStorage.getItem('mollysBusBuddies.v2')).completedLevels.join(',')"));
+console.log("level 12 via UI (reload after 7 moves):", await evaluate("document.getElementById('card-title').textContent + ' | done=' + JSON.parse(localStorage.getItem('mollysBusBuddies.v3')).completedLevels.join(',')"));
 
 // Offline check: SW should be controlling by now.
 const swState = await evaluate("navigator.serviceWorker.ready.then(r => r.active && r.active.state)");

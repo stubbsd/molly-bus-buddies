@@ -1,20 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createSession, sessionTap, sessionUndo, sessionRestart, initialState, keyOf, isWon } from "../js/game.js";
+import { createSession, sessionTap, sessionUndo, sessionRestart, initialState, keyOf, isWon, legalMoves } from "../js/game.js";
 import { analyseLevel } from "../tools/solve.mjs";
 import { loadLevel } from "./helpers.mjs";
 
 test("a legal move grows the undo stack by one; a bump does not", () => {
-  const s = createSession(loadLevel(2));
-  assert.equal(sessionTap(s, "y2").moved, false);
+  const level = loadLevel(2);
+  const s = createSession(level);
+  const blocked = s.state.parked.find((b) => b.blockers.length > 0);
+  assert.equal(sessionTap(s, blocked.id).moved, false);
   assert.equal(s.undoStack.length, 0);
-  assert.equal(sessionTap(s, "y1").moved, true);
+  assert.equal(sessionTap(s, analyseLevel(level).path[0]).moved, true);
   assert.equal(s.undoStack.length, 1);
 });
 
 test("undo restores the exact previous queue, loop, bays and parked set", () => {
   const level = loadLevel(4);
-  const path = analyseLevel(level).shortestPath;
+  const path = analyseLevel(level).path;
   const s = createSession(level);
   for (const id of path.slice(0, 2)) sessionTap(s, id);
   const snap = JSON.parse(JSON.stringify(s.state));
@@ -24,15 +26,16 @@ test("undo restores the exact previous queue, loop, bays and parked set", () => 
   assert.deepEqual(s.state, snap);
 });
 
-test("after a tempting wrong move, undo and the solver's path still wins (level 4 trap recovery)", () => {
+test("after a wrong move, undo and the solver's path still wins (level 4)", () => {
   const level = loadLevel(4);
-  const r = analyseLevel(level);
-  const trap = r.tempting[0];
+  const path = analyseLevel(level).path;
   const s = createSession(level);
-  for (const id of trap.prefix) assert.equal(sessionTap(s, id).moved, true);
-  assert.equal(sessionTap(s, trap.busId).moved, true);
+  for (const id of path.slice(0, 3)) assert.equal(sessionTap(s, id).moved, true);
+  const wrong = legalMoves(s.state).find((b) => b.id !== path[3]);
+  assert.ok(wrong, "there is another bus to try");
+  assert.equal(sessionTap(s, wrong.id).moved, true);
   assert.ok(sessionUndo(s));
-  for (const id of r.shortestPath.slice(trap.prefix.length)) assert.equal(sessionTap(s, id).moved, true);
+  for (const id of path.slice(3)) assert.equal(sessionTap(s, id).moved, true);
   assert.ok(isWon(s.state));
 });
 
@@ -46,7 +49,7 @@ test("undo on an empty stack does nothing", () => {
 test("restart resets to the initial settled state and clears the stack", () => {
   const level = loadLevel(3);
   const s = createSession(level);
-  for (const id of analyseLevel(level).shortestPath.slice(0, 2)) sessionTap(s, id);
+  for (const id of analyseLevel(level).path.slice(0, 2)) sessionTap(s, id);
   sessionRestart(s);
   assert.equal(s.undoStack.length, 0);
   assert.deepEqual(s.state, initialState(level));
@@ -55,7 +58,7 @@ test("restart resets to the initial settled state and clears the stack", () => {
 test("a saved session (as stored in localStorage) resumes exactly, mystery flags included", () => {
   const level = loadLevel(8);
   const s = createSession(level);
-  sessionTap(s, analyseLevel(level).shortestPath[0]);
+  sessionTap(s, analyseLevel(level).path[0]);
   const stored = JSON.parse(JSON.stringify({ state: s.state, undoStack: s.undoStack }));
   const r = createSession(level, stored);
   assert.deepEqual(r.state, s.state);

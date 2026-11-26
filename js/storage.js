@@ -1,9 +1,9 @@
 // On-device progress only (SPEC.md §2.5). Single localStorage key.
-// v2: the levels were redesigned for the new rules. Old (v1) progress is migrated:
+// v2/v3: the levels were redesigned (v3: packed car parks). Older progress is migrated:
 // sound setting and unlocked levels are kept; a half-played v1 level is dropped
 // because its saved board no longer matches the new level.
-export const STORAGE_KEY = "mollysBusBuddies.v2";
-export const LEGACY_KEYS = ["mollysBusBuddies.v1"];
+export const STORAGE_KEY = "mollysBusBuddies.v3";
+export const LEGACY_KEYS = ["mollysBusBuddies.v2", "mollysBusBuddies.v1"];
 
 export function defaultProgress() {
   return { soundMuted: false, completedLevels: [], currentLevel: 1, inProgress: null };

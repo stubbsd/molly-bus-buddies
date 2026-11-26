@@ -1,24 +1,27 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { initialState, applyMove, settle } from "../js/game.js";
+import { analyseLevel } from "../tools/solve.mjs";
 import { loadLevel, placeBus } from "./helpers.mjs";
 
-test("start of level 1: all nine people walk the ring (it holds 24), nobody boards", () => {
-  const s = initialState(loadLevel(1));
-  assert.equal(s.loopCapacity, 24);
-  assert.equal(s.loop.length, 9);
-  assert.equal(s.queue.length, 0);
+test("start of level 1: the line is long enough to pack the ring and feeders; nobody boards yet", () => {
+  const l = loadLevel(1);
+  const s = initialState(l);
+  assert.equal(s.loop.length + s.queue.length, l.queue.length);
+  assert.ok(l.queue.length >= 80, "enough people to fill the ring (about 50) and both feeders");
   assert.deepEqual(s.bays, [null, null, null, null, null]);
-  assert.equal(s.parked.length, 3);
+  assert.equal(s.parked.length, l.buses.length);
 });
 
-test("level 1: sending r1 boards the three reds at the front, then r1 departs", () => {
-  const r = applyMove(initialState(loadLevel(1)), "r1");
-  assert.deepEqual(r.events.filter((e) => e.type === "board").map((e) => e.colour), ["red", "red", "red"]);
-  assert.ok(r.events.some((e) => e.type === "depart" && e.busId === "r1"));
-  assert.deepEqual(r.state.bays, [null, null, null, null, null]);
-  assert.equal(r.state.loop[0], "yellow"); // a yellow is at the front now
-  assert.deepEqual(r.state.departed, ["r1"]);
+test("level 1: the first move of the solution lets the matching front people board", () => {
+  const l = loadLevel(1);
+  const first = analyseLevel(l).path[0];
+  const s = initialState(l);
+  const r = applyMove(s, first);
+  const boards = r.events.filter((e) => e.type === "board");
+  assert.ok(boards.length > 0);
+  assert.ok(boards.every((e) => e.colour === l.buses.find((b) => b.id === first).colour));
+  assert.ok(boards.length <= l.buses.find((b) => b.id === first).capacity);
 });
 
 test("there is no overtaking: settle stops at the first person without a bus", () => {
