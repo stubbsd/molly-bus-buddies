@@ -18,7 +18,7 @@ test("manifest has name, start_url, standalone display and 192/512 icons", () =>
 
 test("sw.js has a versioned cache and precaches every local asset", () => {
   const sw = readText("sw.js");
-  assert.match(sw, /bus-buddies-v\d+/);
+  assert.match(sw, /const VERSION = "bus-buddies-v2";/);
   const list = JSON.parse(sw.match(/const PRECACHE = (\[[\s\S]*?\]);/)[1].replace(/,\s*\]/, "]"));
   for (const f of ["index.html", "styles.css", "manifest.webmanifest", "icons/apple-touch-icon.png", ...files("js"), ...files("levels"), ...files("icons"), ...files("audio")]) {
     assert.ok(list.includes(f), "precache missing " + f);
@@ -46,4 +46,12 @@ test("the shipped game requests nothing from another origin", () => {
 test("player-facing text has no harsh or US spellings", () => {
   const t = (readText("index.html") + readText("js/ui.js") + readText("js/main.js")).replace(/[\w-]*-color/g, "");
   assert.doesNotMatch(t, /game over|you lose|failed|\bcolor/i);
+});
+
+test("the out-of-room card is gentle: Try again and Undo only, no shop, coins, adverts or videos", () => {
+  const t = readText("js/main.js") + readText("index.html") + readText("js/ui.js");
+  assert.match(t, /"Out of room!"/);
+  assert.match(t, /label: "Try again"/);
+  assert.match(t, /label: "Undo", soft: true/);
+  assert.doesNotMatch(t, /\b(coins?|shop|purchase|buy|advert|watch a video|VIP|£)\b/i);
 });

@@ -1,9 +1,10 @@
 // Boot, screen routing, input, and the animation that plays out each settle.
 import {
-  createSession, sessionTap, sessionUndo, sessionRestart, isWon, isStuck, keyOf, clone,
+  createSession, sessionTap, sessionUndo, sessionRestart, isWon, isStuck, isLost, isRevealed, keyOf, clone,
 } from "./game.js";
 import {
-  computeLayout, slotPos, queuePoint, loopXY, hitBus, drawBead, drawBus, drawBackground, drawSeatDots,
+  computeLayout, slotPos, queuePoint, loopXY, hitBus, drawBead, drawBus, drawBackground,
+  drawMysteryBus, drawCountdown, drawFrontGlow, drawBumpBurst,
 } from "./render.js";
 import { loadProgress, saveProgress, isUnlocked } from "./storage.js";
 import { loadIndex, loadLevel, preloadAll } from "./levels.js";
@@ -36,7 +37,14 @@ const D = {
 };
 
 const person = (colour) => ({ pid: ++pid, colour });
+const rad = (d) => (d * Math.PI) / 180;
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+// Animation timings (ms). v1 -> v2: bus to bay 750 -> 360, depart 750 -> 360,
+// blocked shake 260 -> bump 320. People stay readable: hop 560, 150 between boarders.
+const T = { toBay: 360, depart: 360, bump: 320, hop: 560, boardGap: 150, enter: 70, loseCard: 520 };
+const HINT = "Only the front person can hop on";
+let loseTimer = 0;
+
 const busy = () => D.events.length > 0 || D.flyers.length > 0 || D.ghosts.some((g) => g.kind === "toBay");
 
 function loopTarget(i, n) {
@@ -107,20 +115,18 @@ function step(now, dt) {
       const p = D.queue.shift(); D.loop.push(p);
       const per = D.persons.get(p.pid); per.mode = "l";
       per.a = (Math.atan2(per.y - L.island.cy, per.x - L.island.cx) * 180) / Math.PI;
-      D.nextAt = now + 70 * speed;
-    } else if (e.type === "rotate") {
-      D.loop.push(D.loop.shift());
+      D.nextAt = now + T.enter * speed;
     } else if (e.type === "board") {
       if (arriving) break;
       const p = D.loop.shift();
       const per = D.persons.get(p.pid); per.mode = "f";
-      D.flyers.push({ pid: p.pid, colour: p.colour, x0: per.x, y0: per.y, t0: now, dur: 560 * speed, bay: e.bay });
+      D.flyers.push({ pid: p.pid, colour: p.colour, x0: per.x, y0: per.y, t0: now, dur: T.hop * speed, bay: e.bay });
       D.bays[e.bay].pending++;
-      D.nextAt = now + 150 * speed;
+      D.nextAt = now + T.boardGap * speed;
     } else if (e.type === "depart") {
       if (arriving || D.flyers.some((f) => f.bay === e.bay)) break;
       const b = D.bays[e.bay];
-      D.ghosts.push({ kind: "depart", bus: b, bay: e.bay, t0: now, dur: 750 * speed });
+      D.ghosts.push({ kind: "depart", bus: b, bay: e.bay, t0: now, dur: T.depart * (RM() ? 0.5 : 1) });
       D.bays[e.bay] = null;
       audio.play("depart", 0.45);
     }
@@ -175,23 +181,58 @@ function draw(now) {
     const p = D.queue[i]; const per = D.persons.get(p.pid);
     drawBead(ctx, p.colour, per.x, per.y, br, dpr);
   }
-  for (const p of D.loop) { const per = D.persons.get(p.pid); drawBead(ctx, p.colour, per.x, per.y, br, dpr); }
+  // the person at the front of the line glows: only they can board
+  const front = D.loop[0];
+  if (front && !session.state.lost) { const per = D.persons.get(front.pid); drawFrontGlow(ctx, per.x, per.y, br * (RM() ? 1.15 : 1.15 + 0.12 * Math.sin(now / 180))); }
+  for (let i = D.loop.length - 1; i >= 0; i--) { const p = D.loop[i]; const per = D.persons.get(p.pid); drawBead(ctx, p.colour, per.x, per.y, br, dpr); }
   // bay buses
   D.bays.forEach((b, i) => {
     if (!b) return;
     const bay = L.bays[i];
     const bt = D.bumps.get(i); const bump = bt && now - bt < 220 ? 1 + 0.06 * Math.sin(((now - bt) / 220) * Math.PI) : 1;
     drawBus(ctx, bay.cx, bay.cy - bay.h * 0.07, 0, L.bayBus.len, L.bayBus.wid, b.colour, { scale: bump });
-    drawSeatDots(ctx, bay, b.filled, b.capacity);
+    drawCountdown(ctx, bay, b.capacity - b.filled, bump > 1 ? 1 + (bump - 1) * 2.5 : 1);
   });
   // parked buses
-  const drawOrder = session.state.parked.slice().sort((a, b) => slotPos(L, b.slot).y - slotPos(L, a.slot).y);
+  const parked = session.state.parked;
+  const lostId = session.state.lost?.busId;
+  const drawOrder = parked.filter((b) => b.id !== lostId).sort((a, b) => slotPos(L, b.slot).y - slotPos(L, a.slot).y);
+  const bursts = [];
   for (const b of drawOrder) {
     const p = slotPos(L, b.slot);
-    let ang = p.angle;
+    let ang = p.angle, x = p.x, y = p.y;
     const st = D.shakes.get(b.id);
-    if (st) { const t = (now - st) / 260; if (t < 1) ang += Math.sin(t * Math.PI * 6) * 6 * (1 - t); else D.shakes.delete(b.id); }
-    drawBus(ctx, p.x, p.y, ang, L.parkBus.len, L.parkBus.wid, b.colour);
+    if (st) {
+      // bump: nudge forward along the roof arrow into the bus in front, then settle back
+      const t = (now - st) / (T.bump * (RM() ? 0.6 : 1));
+      if (t < 1) {
+        const push = RM() ? 0 : Math.sin(Math.min(1, t * 1.6) * Math.PI) * L.parkBus.len * 0.16;
+        const hx = Math.sin(rad(p.angle)), hy = -Math.cos(rad(p.angle));
+        x += hx * push; y += hy * push;
+        ang += RM() ? 0 : Math.sin(t * Math.PI * 4) * 4 * (1 - t);
+        if (t > 0.12 && t < 0.85) bursts.push({ x: x + hx * L.parkBus.len * 0.55, y: y + hy * L.parkBus.len * 0.55, s: 0.8 + 0.3 * Math.sin(t * Math.PI) });
+      } else D.shakes.delete(b.id);
+    }
+    if (isRevealed(b, parked)) drawBus(ctx, x, y, ang, L.parkBus.len, L.parkBus.wid, b.colour);
+    else drawMysteryBus(ctx, x, y, ang, L.parkBus.len, L.parkBus.wid);
+  }
+  for (const s of bursts) drawBumpBurst(ctx, s.x, s.y, s.s);
+  // the bus that had nowhere to go waits just short of the full bays
+  if (lostId) {
+    const b = parked.find((x) => x.id === lostId);
+    if (b) {
+      const from = slotPos(L, b.slot);
+      const lt = D.lostAt ? Math.min(1, (now - D.lostAt) / T.toBay) : 1;
+      const u = ease(lt);
+      // portrait: it pulls up just under the road; landscape: it heads towards the bays and stops short
+      const to = L.landscape
+        ? { x: from.x + (L.bays[2].cx - from.x) * 0.4, y: from.y + (L.bays[2].cy - from.y) * 0.4 }
+        : { x: L.bays[2].cx, y: L.road.y + L.road.h + L.parkBus.len * 0.5 };
+      const c = { x: to.x, y: from.y };
+      const gx = (1 - u) * (1 - u) * from.x + 2 * (1 - u) * u * c.x + u * u * to.x;
+      const gy = (1 - u) * (1 - u) * from.y + 2 * (1 - u) * u * c.y + u * u * to.y;
+      drawBus(ctx, gx, gy, from.angle * (1 - u * 0.75), L.parkBus.len, L.parkBus.wid, b.colour);
+    }
   }
   // ghosts
   for (const g of D.ghosts) {
@@ -242,19 +283,20 @@ async function startLevel(id, resume = true) {
   try { session = createSession(level, saved); } catch { session = createSession(level); }
   progress.currentLevel = id;
   stuckDismissedKey = null; wonShown = false;
-  ui.setLevelLabel(id); ui.setHint("Choose a bus for the queue"); ui.setStuckVisible(false); ui.hideCard();
+  clearTimeout(loseTimer); D.lostAt = 0;
+  ui.setLevelLabel(id); ui.setHint(HINT); ui.setStuckVisible(false); ui.hideCard();
   ui.showScreen("game");
   resize();
   rebuildDisplay();
   updateUndo();
   save();
-  checkStuck();
+  if (isLost(session.state)) showOutOfRoom(0); else checkStuck();
 }
 
 function updateUndo() { ui.setUndoEnabled(session && session.undoStack.length > 0); }
 
 function onTap(x, y) {
-  if (!session || ui.cardOpen() || busy() || isWon(session.state)) return;
+  if (!session || ui.cardOpen() || busy() || isWon(session.state) || isLost(session.state)) return;
   const id = hitBus(L, session.state.parked, x, y);
   if (!id) return;
   const before = session.state;
@@ -263,15 +305,41 @@ function onTap(x, y) {
   if (!r.moved) { D.shakes.set(id, performance.now()); audio.play("shake", 0.4); return; }
   audio.play("tap", 0.4);
   ui.setStuckVisible(false);
+  if (r.lost) {
+    D.lostAt = performance.now();
+    ui.setHint("The loading bays are full");
+    updateUndo(); save();
+    showOutOfRoom(RM() ? 150 : T.loseCard);
+    return;
+  }
   const from = slotPos(L, bus.slot);
   const now = performance.now();
-  const dur = RM() ? 200 : 750;
+  const dur = RM() ? 200 : T.toBay;
   D.ghosts.push({ kind: "toBay", bus, from, bay: r.bay, t0: now, dur });
   D.events.push(...r.events);
   D.nextAt = now;
   D.pendingSettle = true;
   updateUndo();
   save();
+}
+
+/** Gentle lose card: just Try again or Undo. */
+function showOutOfRoom(delay) {
+  clearTimeout(loseTimer);
+  loseTimer = setTimeout(() => {
+    if (!session || !isLost(session.state)) return;
+    ui.setHint("The loading bays are full");
+    ui.showCard("Out of room!", "Every loading bay is full. Have another go?", [
+      { label: "Try again", onClick: restartNow },
+      { label: "Undo", soft: true, onClick: undo },
+    ], { variant: "lose" });
+  }, delay);
+}
+
+function restartNow() {
+  clearTimeout(loseTimer); D.lostAt = 0;
+  sessionRestart(session); wonShown = false; stuckDismissedKey = null;
+  ui.hideCard(); rebuildDisplay(); ui.setHint(HINT); updateUndo(); save(); checkStuck();
 }
 
 function afterSettle() {
@@ -281,6 +349,7 @@ function afterSettle() {
 
 function checkStuck() {
   const stuck = isStuck(session.state);
+  if (stuck) ui.setHint("The loading bays are full");
   ui.setStuckVisible(stuck && keyOf(session.state) !== stuckDismissedKey);
 }
 
@@ -310,9 +379,11 @@ function celebrate() {
 
 function undo() {
   if (!session || !sessionUndo(session)) return;
+  clearTimeout(loseTimer); D.lostAt = 0;
   wonShown = false;
+  ui.hideCard();
   rebuildDisplay();
-  ui.setHint("Choose a bus for the queue");
+  ui.setHint(HINT);
   stuckDismissedKey = null;
   updateUndo(); save(); checkStuck();
 }
@@ -320,7 +391,7 @@ function undo() {
 function askRestart() {
   if (!session) return;
   ui.showCard("Start this level again?", "", [
-    { label: "Start again", onClick: () => { sessionRestart(session); wonShown = false; stuckDismissedKey = null; rebuildDisplay(); ui.setHint("Choose a bus for the queue"); updateUndo(); save(); checkStuck(); } },
+    { label: "Start again", onClick: restartNow },
     { label: "Keep playing", soft: true },
   ]);
 }

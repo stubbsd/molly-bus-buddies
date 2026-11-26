@@ -1,22 +1,22 @@
 {
   "id": 12,
   "name": "Molly's master plan",
-  "loopCapacity": 5,
-  "queue": ["red", "red", "red", "yellow", "yellow", "yellow", "blue", "blue", "blue", "green", "green", "green", "purple", "purple", "purple", "pink", "pink", "pink", "red", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "red", "red", "red", "red", "red", "red", "red", "red", "red", "blue", "blue", "blue", "blue", "blue", "blue", "green", "green", "green", "green", "green", "green", "yellow", "yellow", "yellow", "purple", "purple", "purple", "pink", "pink", "pink", "pink", "pink", "pink"],
+  "loopCapacity": 6,
+  "queue": ["yellow", "yellow", "yellow", "pink", "pink", "yellow", "yellow", "red", "red", "red", "red", "red", "red", "green", "pink", "purple", "purple", "pink", "purple", "blue", "blue", "blue", "yellow", "green", "green", "green", "pink", "pink", "pink", "purple", "purple", "yellow", "yellow", "purple", "yellow", "yellow", "blue", "yellow", "yellow", "yellow", "yellow", "pink", "pink", "blue", "blue", "blue", "pink", "pink", "pink", "pink", "purple", "purple", "purple", "red", "red", "red"],
   "buses": [
-    {"id": "r1", "colour": "red", "capacity": 6, "slot": "LW0"},
-    {"id": "r2", "colour": "red", "capacity": 4, "slot": "LW1"},
-    {"id": "r3", "colour": "red", "capacity": 3, "slot": "LW2"},
-    {"id": "y3", "colour": "yellow", "capacity": 3, "slot": "LW3"},
-    {"id": "g2", "colour": "green", "capacity": 3, "slot": "LW4"},
-    {"id": "y1", "colour": "yellow", "capacity": 6, "slot": "LC0"},
-    {"id": "y2", "colour": "yellow", "capacity": 3, "slot": "LC1"},
-    {"id": "g3", "colour": "green", "capacity": 3, "slot": "LC2"},
-    {"id": "g1", "colour": "green", "capacity": 3, "slot": "RC0"},
-    {"id": "b2", "colour": "blue", "capacity": 3, "slot": "RC3"},
-    {"id": "k2", "colour": "pink", "capacity": 3, "slot": "RC2"},
-    {"id": "b1", "colour": "blue", "capacity": 6, "slot": "RE0"},
-    {"id": "p1", "colour": "purple", "capacity": 6, "slot": "RE1"},
-    {"id": "k1", "colour": "pink", "capacity": 6, "slot": "RE2"}
+    {"id": "k1", "colour": "pink", "capacity": 4, "slot": "LW0"},
+    {"id": "g1", "colour": "green", "capacity": 4, "slot": "LW1"},
+    {"id": "p1", "colour": "purple", "capacity": 6, "slot": "LW2", "mystery": true},
+    {"id": "y1", "colour": "yellow", "capacity": 4, "slot": "LW3", "mystery": true},
+    {"id": "p2", "colour": "purple", "capacity": 3, "slot": "LW4"},
+    {"id": "y2", "colour": "yellow", "capacity": 3, "slot": "LC0"},
+    {"id": "b1", "colour": "blue", "capacity": 4, "slot": "LC1", "mystery": true},
+    {"id": "b2", "colour": "blue", "capacity": 3, "slot": "LC2"},
+    {"id": "k2", "colour": "pink", "capacity": 6, "slot": "RC0"},
+    {"id": "r1", "colour": "red", "capacity": 3, "slot": "RC1", "mystery": true},
+    {"id": "y3", "colour": "yellow", "capacity": 3, "slot": "RE0"},
+    {"id": "r2", "colour": "red", "capacity": 6, "slot": "RE1"},
+    {"id": "y4", "colour": "yellow", "capacity": 4, "slot": "RE2"},
+    {"id": "k3", "colour": "pink", "capacity": 3, "slot": "RE3"}
   ]
 }

@@ -158,6 +158,13 @@ body.landscape .controls { left: 50%; width: 50%; }
 .stuck .card-actions { flex-direction: row; justify-content: center; }
 .stuck .pill { min-width: 120px; font-size: 18px; }
 
+/* Gentle "Out of room!" card: lower down so the full bays stay in view, buttons side by side */
+.overlay.lose { align-items: flex-end; background: rgba(31, 59, 44, .16); padding-bottom: calc(var(--sab) + 124px); }
+.overlay.lose .card { width: min(354px, 92vw); padding: 18px 20px 16px; }
+.overlay.lose .card-actions { flex-direction: row; justify-content: center; gap: 10px; }
+.overlay.lose .pill { min-width: 0; flex: 1; font-size: 19px; }
+body.landscape .overlay.lose { padding-left: 50%; }
+
 @keyframes pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .stuck { animation-name: popc; }
 @keyframes popc { from { transform: translateX(-50%) scale(.92); opacity: 0; } to { transform: translateX(-50%) scale(1); opacity: 1; } }

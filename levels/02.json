@@ -1,12 +1,12 @@
 {
   "id": 2,
   "name": "The shy bus",
-  "loopCapacity": 16,
+  "loopCapacity": 6,
   "queue": ["red", "red", "red", "red", "red", "red", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow"],
   "buses": [
-    {"id": "r1", "colour": "red", "capacity": 3, "slot": "LW0"},
-    {"id": "r2", "colour": "red", "capacity": 3, "slot": "LC0"},
-    {"id": "y1", "colour": "yellow", "capacity": 3, "slot": "RC0"},
-    {"id": "y2", "colour": "yellow", "capacity": 3, "slot": "RC1"}
+    {"id": "y1", "colour": "yellow", "capacity": 3, "slot": "LW0"},
+    {"id": "y2", "colour": "yellow", "capacity": 3, "slot": "LW1"},
+    {"id": "r1", "colour": "red", "capacity": 3, "slot": "LC0"},
+    {"id": "r2", "colour": "red", "capacity": 3, "slot": "RE0"}
   ]
 }

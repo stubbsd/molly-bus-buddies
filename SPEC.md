@@ -1,3 +1,5 @@
+> **Note (v2):** the game now plays by the v2 rules in `README.md` (front-of-queue boarding, seat countdowns, mystery buses, out of room). This document is the original v1 specification and is kept for reference.
+
 # Molly's Bus Buddies — Build Specification
 
 **Version:** 1.0  

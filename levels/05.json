@@ -2,13 +2,14 @@
   "id": 5,
   "name": "Long bus, short bus",
   "loopCapacity": 6,
-  "queue": ["red", "red", "red", "yellow", "yellow", "blue", "blue", "blue", "yellow", "blue", "blue", "blue", "red", "red", "red", "red", "red", "red", "red", "red", "red", "red", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow"],
+  "queue": ["yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "yellow", "blue", "blue", "red", "red", "red", "red", "blue", "blue", "blue", "blue", "blue", "blue", "blue", "blue", "blue", "red", "blue", "blue", "red", "red", "red", "red", "red"],
   "buses": [
-    {"id": "r1", "colour": "red", "capacity": 6, "slot": "LW0"},
-    {"id": "r2", "colour": "red", "capacity": 4, "slot": "LW1"},
-    {"id": "r3", "colour": "red", "capacity": 3, "slot": "LW2"},
-    {"id": "y1", "colour": "yellow", "capacity": 6, "slot": "LC0"},
-    {"id": "y2", "colour": "yellow", "capacity": 3, "slot": "RC0"},
-    {"id": "b1", "colour": "blue", "capacity": 6, "slot": "RE0"}
+    {"id": "y1", "colour": "yellow", "capacity": 4, "slot": "LW0"},
+    {"id": "b1", "colour": "blue", "capacity": 3, "slot": "LW1"},
+    {"id": "b2", "colour": "blue", "capacity": 4, "slot": "LW2"},
+    {"id": "r1", "colour": "red", "capacity": 4, "slot": "RC0"},
+    {"id": "b3", "colour": "blue", "capacity": 6, "slot": "RC1"},
+    {"id": "r2", "colour": "red", "capacity": 6, "slot": "RC2"},
+    {"id": "y2", "colour": "yellow", "capacity": 4, "slot": "RE0"}
   ]
 }

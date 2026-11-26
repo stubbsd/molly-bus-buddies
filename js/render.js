@@ -218,9 +218,136 @@ export function drawBus(ctx, x, y, angle, len, wid, colour, opts = {}) {
   // headlights
   ctx.fillStyle = "#fff7c2";
   ctx.beginPath(); ctx.arc(-W * 0.3, -Lh / 2 + W * 0.06, W * 0.07, 0, Math.PI * 2); ctx.arc(W * 0.3, -Lh / 2 + W * 0.06, W * 0.07, 0, Math.PI * 2); ctx.fill();
-  if (opts.dim) { ctx.fillStyle = "rgba(255,255,255,.0)"; }
   ctx.restore();
 }
+
+/** Dark 'mystery' bus in the same toy-coach style, with a white ? on the roof. */
+export function drawMysteryBus(ctx, x, y, angle, len, wid) {
+  const hex = "#3C4450";
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rad(angle));
+  const Wd = wid, Lh = len, r = Wd * 0.34;
+  ctx.fillStyle = "rgba(31,59,44,.22)";
+  roundRect(ctx, -Wd / 2 + Wd * 0.08, -Lh / 2 + Wd * 0.16, Wd, Lh, r); ctx.fill();
+  ctx.fillStyle = "#2b2f36";
+  for (const sy of [-0.3, 0.3]) for (const sx of [-1, 1]) {
+    roundRect(ctx, sx * (Wd / 2) - (sx > 0 ? Wd * 0.02 : Wd * 0.14), sy * Lh - Wd * 0.17, Wd * 0.16, Wd * 0.34, Wd * 0.06); ctx.fill();
+  }
+  ctx.fillStyle = shade(hex, -0.18);
+  roundRect(ctx, -Wd / 2, -Lh / 2, Wd, Lh, r); ctx.fill();
+  ctx.fillStyle = hex;
+  roundRect(ctx, -Wd / 2 + Wd * 0.05, -Lh / 2 + Wd * 0.02, Wd * 0.9, Lh - Wd * 0.1, r * 0.9); ctx.fill();
+  ctx.fillStyle = "#9aa7b5";
+  roundRect(ctx, -Wd * 0.36, -Lh / 2 + Wd * 0.1, Wd * 0.72, Lh * 0.09, Wd * 0.12); ctx.fill();
+  ctx.fillStyle = "#2a3038";
+  const wn = 4, wy0 = -Lh / 2 + Lh * 0.24, wl = (Lh * 0.66) / wn;
+  for (let i = 0; i < wn; i++) for (const sx of [-1, 1]) {
+    roundRect(ctx, sx > 0 ? Wd * 0.26 : -Wd * 0.38, wy0 + i * wl + wl * 0.1, Wd * 0.12, wl * 0.78, Wd * 0.04); ctx.fill();
+  }
+  ctx.fillStyle = shade(hex, 0.16);
+  roundRect(ctx, -Wd * 0.22, -Lh / 2 + Lh * 0.22, Wd * 0.44, Lh * 0.66, Wd * 0.14); ctx.fill();
+  // tiny faint arrow so the exit direction is still readable
+  ctx.strokeStyle = "rgba(255,255,255,.55)";
+  ctx.fillStyle = "rgba(255,255,255,.55)";
+  ctx.lineCap = "round"; ctx.lineWidth = Wd * 0.07;
+  const ay = -Lh / 2 + Lh * 0.28;
+  ctx.beginPath(); ctx.moveTo(0, Lh * 0.06); ctx.lineTo(0, ay + Wd * 0.22); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, ay - Wd * 0.02); ctx.lineTo(Wd * 0.13, ay + Wd * 0.18); ctx.lineTo(-Wd * 0.13, ay + Wd * 0.18); ctx.closePath(); ctx.fill();
+  // friendly white ? badge on the mid-roof
+  const br = Wd * 0.32;
+  ctx.fillStyle = "#F4F7FB";
+  ctx.beginPath(); ctx.arc(0, Lh * 0.08, br, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "rgba(31,59,44,.2)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = "#2A3340";
+  ctx.font = `800 ${Math.max(13, Wd * 0.48)}px ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("?", 0, Lh * 0.1);
+  ctx.fillStyle = "#e8eef3";
+  ctx.beginPath(); ctx.arc(-Wd * 0.3, -Lh / 2 + Wd * 0.06, Wd * 0.07, 0, Math.PI * 2); ctx.arc(Wd * 0.3, -Lh / 2 + Wd * 0.06, Wd * 0.07, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+/** Yellow seat-countdown badge under a bay bus. */
+export function drawCountdown(ctx, bay, n, scale = 1) {
+  const x = bay.cx;
+  const y = bay.y + bay.h - 3;
+  const r = clamp(bay.w * 0.21, 10, 18) * scale;
+  ctx.save();
+  ctx.fillStyle = "rgba(31,59,44,.22)";
+  ctx.beginPath(); ctx.arc(x, y + 1.5, r, 0, Math.PI * 2); ctx.fill();
+  const g = ctx.createRadialGradient(x - 3, y - 4, 2, x, y, r);
+  g.addColorStop(0, "#FFE56A");
+  g.addColorStop(0.7, "#F5C518");
+  g.addColorStop(1, "#D9A40E");
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.lineWidth = 2.2;
+  ctx.strokeStyle = "#fff";
+  ctx.stroke();
+  ctx.fillStyle = "#23412F";
+  ctx.font = `800 ${Math.round(r * 1.2)}px ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(n), x, y + 0.5);
+  ctx.restore();
+}
+
+/** Soft halo marking the person at the front of the line. */
+export function drawFrontGlow(ctx, x, y, r) {
+  const g = ctx.createRadialGradient(x, y, r * 0.4, x, y, r * 2.15);
+  g.addColorStop(0, "rgba(255,255,255,.95)");
+  g.addColorStop(0.45, "rgba(255,248,180,.7)");
+  g.addColorStop(1, "rgba(255,248,180,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x, y, r * 2.15, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,.95)";
+  ctx.lineWidth = 2.4;
+  ctx.beginPath(); ctx.arc(x, y, r * 1.28, 0, Math.PI * 2); ctx.stroke();
+}
+
+/** Gentle cartoon 'boop' at the point two buses touch — not an explosion. */
+export function drawBumpBurst(ctx, x, y, s = 1) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  // soft glow
+  const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 22);
+  glow.addColorStop(0, "rgba(255,255,255,.95)");
+  glow.addColorStop(0.4, "rgba(255,230,120,.65)");
+  glow.addColorStop(1, "rgba(255,230,120,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(0, 0, 24, 0, Math.PI * 2); ctx.fill();
+  // little star-puff
+  ctx.fillStyle = "#FFF8D8";
+  ctx.strokeStyle = "#F0C430";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
+    const r = i % 2 === 0 ? 13 : 5.5;
+    const px = Math.cos(a) * r, py = Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  // short motion ticks
+  ctx.strokeStyle = "rgba(35,65,47,.45)";
+  ctx.lineCap = "round";
+  ctx.lineWidth = 2;
+  for (const [a, l] of [[-50, 9], [-15, 11], [20, 8]]) {
+    const ang = rad(a);
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(ang) * 13, Math.sin(ang) * 13);
+    ctx.lineTo(Math.cos(ang) * (13 + l), Math.sin(ang) * (13 + l));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+
 
 // ---------------- static background ----------------
 
@@ -291,16 +418,4 @@ export function drawBackground(ctx, L) {
   const ts = clamp(Math.min(L.road.h * 0.26, (rd.w / 2 - Ruo) * 0.7), 12, 40);
   drawTree(ctx, rd.x + ts * 0.85, rd.y - ts * 0.7, ts);
   drawTree(ctx, rd.x + rd.w - ts * 0.85, rd.y - ts * 0.7, ts);
-}
-
-export function drawSeatDots(ctx, bay, filled, capacity) {
-  const r = clamp(bay.w * 0.045, 2.2, 4);
-  const gap = r * 2.6;
-  const total = (capacity - 1) * gap;
-  const y = bay.y + bay.h - bay.h * 0.075;
-  for (let i = 0; i < capacity; i++) {
-    ctx.beginPath(); ctx.arc(bay.cx - total / 2 + i * gap, y, r, 0, Math.PI * 2);
-    ctx.fillStyle = i < filled ? "#3a4656" : "rgba(58,70,86,.25)";
-    ctx.fill();
-  }
 }

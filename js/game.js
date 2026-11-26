@@ -1,4 +1,5 @@
-// Molly's Bus Buddies — official rules (SPEC.md §4). Pure functions, no DOM.
+// Molly's Bus Buddies — official rules (v2: roof arrows, front-of-queue boarding,
+// seat countdowns, mystery buses, out-of-room). Pure functions, no DOM.
 // Shared by the browser game, the solver (tools/solve.mjs) and the tests.
 import { SLOTS, BAY_COUNT } from "./slots.js";
 
@@ -52,6 +53,7 @@ export function clone(state) {
     parked: state.parked.map((b) => ({ ...b })),
     bays: state.bays.map((b) => (b ? { ...b } : null)),
     departed: state.departed.slice(),
+    lost: state.lost ? { ...state.lost } : null,
   };
 }
 
@@ -74,9 +76,12 @@ export function boardingBay(colour, bays) {
 }
 
 /**
- * Official deterministic settle (SPEC.md §4.3). Mutates state.
- * Returns { events, peak } where events describe what happened, in order,
- * for animation, and peak is the highest bay occupancy seen during settle.
+ * Official deterministic settle (v2 rules). Mutates state.
+ * People walk onto the circle in queue order (up to loopCapacity at once).
+ * Only the person at the FRONT (loop[0]) may board: they hop onto the
+ * earliest-arrived bay bus of their colour with a free seat. If there is none,
+ * everybody waits. A bus whose seat countdown reaches 0 drives off.
+ * Returns { events, peak }.
  */
 export function settle(state) {
   const events = [];
@@ -90,31 +95,29 @@ export function settle(state) {
     }
     peak = Math.max(peak, occupiedBayCount(state));
     if (state.loop.length === 0) return { events, peak };
-    let rotated = 0;
-    let boarded = false;
-    const n = state.loop.length;
-    while (rotated < n) {
-      const bi = boardingBay(state.loop[0], state.bays);
-      if (bi >= 0) {
-        const colour = state.loop.shift();
-        const bay = state.bays[bi];
-        bay.filled += 1;
-        events.push({ type: "board", colour, bay: bi, busId: bay.id });
-        if (bay.filled >= bay.capacity) {
-          state.bays[bi] = null;
-          state.departed.push(bay.id);
-          events.push({ type: "depart", bay: bi, busId: bay.id, colour: bay.colour });
-        }
-        boarded = true;
-        break;
-      }
-      state.loop.push(state.loop.shift());
-      events.push({ type: "rotate" });
-      rotated++;
+    const bi = boardingBay(state.loop[0], state.bays);
+    if (bi < 0) return { events, peak };
+    const colour = state.loop.shift();
+    const bay = state.bays[bi];
+    bay.filled += 1;
+    events.push({ type: "board", colour, bay: bi, busId: bay.id });
+    if (bay.filled >= bay.capacity) {
+      state.bays[bi] = null;
+      state.departed.push(bay.id);
+      events.push({ type: "depart", bay: bi, busId: bay.id, colour: bay.colour });
     }
-    if (!boarded) return { events, peak };
   }
   throw new Error("settle overflow");
+}
+
+/** Seats still empty on a bay bus (the countdown badge). */
+export function seatsLeft(bayBus) {
+  return bayBus ? bayBus.capacity - bayBus.filled : 0;
+}
+
+/** The colour of the person at the front of the line, or null. */
+export function frontColour(state) {
+  return state.loop[0] ?? state.queue[0] ?? null;
 }
 
 export function initialState(level) {
@@ -123,9 +126,10 @@ export function initialState(level) {
     tick: 0,
     queue: level.queue.slice(),
     loop: [],
-    parked: level.buses.map((b) => ({ id: b.id, colour: b.colour, capacity: b.capacity, slot: b.slot })),
+    parked: level.buses.map((b) => ({ id: b.id, colour: b.colour, capacity: b.capacity, slot: b.slot, mystery: b.mystery === true })),
     bays: new Array(BAY_COUNT).fill(null),
     departed: [],
+    lost: null,
   };
   settle(state);
   return state;
@@ -138,30 +142,44 @@ export function isUnblocked(bus, parked) {
   return true;
 }
 
+/** A mystery bus shows its colour only once its way out is clear. */
+export function isRevealed(bus, parked) {
+  return !bus.mystery || isUnblocked(bus, parked);
+}
+
 export function hasFreeBay(state) {
   return state.bays.some((b) => b === null);
 }
 
+/** Moves that put a bus into a free bay (sending a bus when every bay is full loses instead). */
 export function legalMoves(state) {
-  if (!hasFreeBay(state)) return [];
+  if (state.lost || isWon(state) || !hasFreeBay(state)) return [];
   return state.parked.filter((b) => isUnblocked(b, state.parked));
 }
 
-/** Why a tap on a parked bus would not be a move: null if legal, else "blocked" | "noBay" | "missing". */
+/** Why a tap is not a normal move: null if it parks in a bay, else "blocked" | "full" | "over" | "missing". */
 export function tapProblem(state, busId) {
+  if (state.lost || isWon(state)) return "over";
   const bus = state.parked.find((b) => b.id === busId);
   if (!bus) return "missing";
   if (!isUnblocked(bus, state.parked)) return "blocked";
-  if (!hasFreeBay(state)) return "noBay";
+  if (!hasFreeBay(state)) return "full";
   return null;
 }
 
 /**
- * Apply a legal move and settle. Returns a NEW state plus
- * { bay, events, peak } (peak counts occupancy right after placement).
+ * Send a bus out and settle. Returns a NEW state plus { bay, events, peak, lost }.
+ * If every bay is already full the bus has nowhere to go: the level is lost
+ * (state.lost = { busId }), the bus stays in its space, and Undo can take it back.
  */
 export function applyMove(state, busId) {
   const problem = tapProblem(state, busId);
+  if (problem === "full") {
+    const next = clone(state);
+    next.tick += 1;
+    next.lost = { busId };
+    return { state: next, bay: -1, events: [], peak: occupiedBayCount(next), lost: true };
+  }
   if (problem) throw new Error(`illegal move ${busId}: ${problem}`);
   const next = clone(state);
   const idx = next.parked.findIndex((b) => b.id === busId);
@@ -172,24 +190,30 @@ export function applyMove(state, busId) {
   next.bays[bay] = { id: bus.id, colour: bus.colour, capacity: bus.capacity, filled: 0, arrivedAt: next.tick };
   const afterPlace = occupiedBayCount(next);
   const { events, peak } = settle(next);
-  return { state: next, bay, events, peak: Math.max(afterPlace, peak) };
+  return { state: next, bay, events, peak: Math.max(afterPlace, peak), lost: false };
+}
+
+export function isLost(state) {
+  return !!state.lost;
 }
 
 export function isWon(state) {
-  return state.queue.length === 0 && state.loop.length === 0 &&
+  return !state.lost && state.queue.length === 0 && state.loop.length === 0 &&
     state.parked.length === 0 && state.bays.every((b) => b === null);
 }
 
 export function canAnyoneBoard(state) {
-  return state.loop.some((c) => boardingBay(c, state.bays) >= 0);
+  return state.loop.length > 0 && boardingBay(state.loop[0], state.bays) >= 0;
 }
 
-/** SPEC.md §4.9 stuck predicate. */
+/**
+ * Stuck: not won or lost, and every bay is full while the front person has no bus.
+ * (After settle, this is the only way to have no safe move: sending any other bus now loses.)
+ */
 export function isStuck(state) {
-  if (isWon(state)) return false;
+  if (isWon(state) || state.lost) return false;
   if (canAnyoneBoard(state)) return false;
-  if (!(state.loop.length >= state.loopCapacity || state.queue.length === 0)) return false;
-  return legalMoves(state).length === 0;
+  return !hasFreeBay(state);
 }
 
 /**
@@ -201,7 +225,7 @@ export function keyOf(state) {
   const ticks = state.bays.filter(Boolean).map((b) => b.arrivedAt).sort((a, b) => a - b);
   const bays = state.bays.map((b) => (b ? `${b.id}:${b.filled}:${ticks.indexOf(b.arrivedAt)}` : "-")).join("|");
   const letter = (c) => (c === "pink" ? "k" : c[0]);
-  return `${parked}#${bays}#${state.queue.map(letter).join("")}#${state.loop.map(letter).join("")}`;
+  return `${parked}#${bays}#${state.queue.map(letter).join("")}#${state.loop.map(letter).join("")}${state.lost ? "#lost:" + state.lost.busId : ""}`;
 }
 
 export function sameState(a, b) {
@@ -219,15 +243,18 @@ export function createSession(level, saved) {
   return s;
 }
 
-/** Tap a bus. Returns { moved:false, problem } or { moved:true, bay, events, before }. */
+/**
+ * Tap a bus. Returns { moved:false, problem } for a blocked bus (it bumps) or a finished level,
+ * else { moved:true, bay, events, lost, before }. A move that loses can be undone.
+ */
 export function sessionTap(session, busId) {
   const problem = tapProblem(session.state, busId);
-  if (problem) return { moved: false, problem };
+  if (problem && problem !== "full") return { moved: false, problem };
   const before = clone(session.state);
   const r = applyMove(session.state, busId);
   session.undoStack.push(before);
   session.state = r.state;
-  return { moved: true, bay: r.bay, events: r.events, before };
+  return { moved: true, bay: r.bay, events: r.events, lost: r.lost, before };
 }
 
 export function sessionUndo(session) {

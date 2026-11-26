@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// Official solver / validator for Molly's Bus Buddies (SPEC.md §7).
+// Official solver / validator for Molly's Bus Buddies (v2 rules: roof arrows and
+// blocking, only the front of the queue boards, seat countdowns, mystery buses,
+// and losing when a bus is sent out while every bay is full).
 // Node standard library only. Usage:
 //   node tools/solve.mjs            # all 12 levels, writes tools/solver-report.md
 //   node tools/solve.mjs 5 6        # only these levels, no report written
 //   node tools/solve.mjs --json     # also print machine-readable summary
 import { readFileSync, writeFileSync } from "node:fs";
 import {
-  initialState, applyMove, legalMoves, isWon, isStuck, keyOf,
+  initialState, applyMove, legalMoves, isWon, isStuck, keyOf, isUnblocked,
   peopleMatchSeats, queueConflicts, maxBlockingDepth,
 } from "../js/game.js";
 import { SLOTS, COLOURS, CAPACITIES } from "../js/slots.js";
@@ -37,7 +39,11 @@ export function validateSchema(level) {
     if (!SLOTS[b.slot]) errors.push("unknown slot " + b.slot);
     if (!COLOURS.includes(b.colour)) errors.push("bad bus colour " + b.colour);
     if (!CAPACITIES.includes(b.capacity)) errors.push("bad capacity " + b.capacity);
+    if ("mystery" in b && typeof b.mystery !== "boolean") errors.push("mystery must be true/false on " + b.id);
   }
+  // A mystery bus must start hidden: somewhere in a blocked row, never in the open front row.
+  const parked = (level.buses || []).filter((b) => SLOTS[b.slot]);
+  for (const b of parked) if (b.mystery && isUnblocked(b, parked)) errors.push(`mystery bus ${b.id} starts unblocked`);
   if (!peopleMatchSeats(level)) errors.push("people do not match seats");
   return errors;
 }
@@ -145,6 +151,7 @@ export function analyseLevel(level) {
     B: level.buses.length,
     D: maxBlockingDepth(level.buses),
     Q: queueConflicts(level.queue),
+    Mys: level.buses.filter((b) => b.mystery).length,
     people: level.queue.length,
     loop: level.loopCapacity,
   };
@@ -180,10 +187,12 @@ export function analyseLevel(level) {
   };
 }
 
-const KEYS = ["C", "B", "D", "BP", "Q", "M"];
-const metricsOf = (r) => ({ C: r.metrics.C, B: r.metrics.B, D: r.metrics.D, BP: r.BP, Q: r.metrics.Q, M: r.M });
+// Difficulty dials. Q (colour changes in the queue) is reported but not a dial: under
+// front-of-queue boarding it is a property of the plan, not a separate challenge.
+const KEYS = ["C", "B", "D", "BP", "Mys"];
+const metricsOf = (r) => ({ C: r.metrics.C, B: r.metrics.B, D: r.metrics.D, BP: r.BP, Mys: r.metrics.Mys });
 
-/** SPEC.md §5.5 campaign rule between consecutive levels. Returns list of problems. */
+/** Campaign rule between consecutive levels (difficulty only ever rises). Returns list of problems. */
 export function campaignProblems(results) {
   const problems = [];
   for (let i = 1; i < results.length; i++) {
@@ -193,10 +202,19 @@ export function campaignProblems(results) {
     const n = results[i].id;
     if (up.length === 0) problems.push(`level ${n}: no metric rises above level ${n - 1}`);
     if (down.length > 1) problems.push(`level ${n}: more than one metric drops (${down.join(", ")})`);
-    if ((down.includes("C") || down.includes("B")) && !(b.M >= a.M && up.length > 0)) problems.push(`level ${n}: C or B drops without compensation`);
+  }
+  for (let i = 1; i < results.length; i++) {
+    const a = results[i - 1], b = results[i];
+    if (b.metrics.B < a.metrics.B) problems.push(`level ${b.id}: fewer buses than level ${a.id}`);
+    if (b.metrics.C < a.metrics.C) problems.push(`level ${b.id}: fewer colours than level ${a.id}`);
+    if (b.BP !== null && a.BP !== null && b.BP < a.BP) problems.push(`level ${b.id}: needs fewer bays at once than level ${a.id}`);
+    if (b.metrics.Mys < a.metrics.Mys) problems.push(`level ${b.id}: fewer mystery buses than level ${a.id}`);
   }
   for (const r of results) {
     if (r.id <= 2 && r.BP !== 1) problems.push(`level ${r.id}: must keep BP = 1`);
+    if (r.id <= 4 && r.BP > 2) problems.push(`level ${r.id}: early levels must leave spare bays (BP <= 2)`);
+    if (r.id <= 5 && r.metrics.Mys > 0) problems.push(`level ${r.id}: no mystery buses before level 6`);
+    if (r.id <= 3 && r.metrics.D > 1) problems.push(`level ${r.id}: blocking too deep for an early level`);
     if (r.id === 1 && r.badStart.length) problems.push("level 1: every opening bus must lead to a win");
   }
   return problems;
@@ -208,17 +226,18 @@ export function levelProblems(r) {
   if (!r.solvable) p.push(`level ${r.id}: unsolvable`);
   else if (r.M !== r.metrics.B) p.push(`level ${r.id}: M (${r.M}) does not equal B (${r.metrics.B})`);
   if (r.id >= 4 && r.solvable && r.tempting.length === 0) p.push(`level ${r.id}: no tempting wrong move`);
+  if (r.solvable && r.BP > 4) p.push(`level ${r.id}: needs all five bays at once (BP ${r.BP})`);
   return p;
 }
 
 function report(results, problems, tunings) {
   const now = new Date();
   const when = now.toLocaleString("en-GB", { timeZone: "Europe/London", dateStyle: "long", timeStyle: "short" });
-  let md = `# Solver report\n\nGenerated by \`node tools/solve.mjs\` on ${when} (Europe/London). Rules: SPEC.md §4.3–§4.9, metrics §5.5.\n\n`;
+  let md = `# Solver report\n\nGenerated by \`node tools/solve.mjs\` on ${when} (Europe/London). Rules: v2 (front-of-queue boarding, directional blocking, mystery buses, out-of-room loss). C colours, B buses, D blocking depth, BP fewest bays needed at once, Mys mystery buses, Q colour changes in the queue, M moves.\n\n`;
   md += `**Result:** ${problems.length ? "FAIL" : "PASS"} — ${results.filter((r) => r.solvable).length}/${results.length} levels solvable.\n\n`;
-  md += "| Lv | Name | C | B | D | BP | Q | M | People | Loop | Tempting wrong moves | States | ms |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n";
+  md += "| Lv | Name | C | B | D | BP | Mys | Q | M | People | Loop | Tempting wrong moves | States | ms |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n";
   for (const r of results) {
-    md += `| ${r.id} | ${r.name} | ${r.metrics.C} | ${r.metrics.B} | ${r.metrics.D} | ${r.BP ?? "–"} | ${r.metrics.Q} | ${r.M ?? "–"} | ${r.metrics.people} | ${r.metrics.loop} | ${r.tempting?.length ?? 0} | ${r.states ?? "–"} | ${r.ms ?? "–"} |\n`;
+    md += `| ${r.id} | ${r.name} | ${r.metrics.C} | ${r.metrics.B} | ${r.metrics.D} | ${r.BP ?? "–"} | ${r.metrics.Mys} | ${r.metrics.Q} | ${r.M ?? "–"} | ${r.metrics.people} | ${r.metrics.loop} | ${r.tempting?.length ?? 0} | ${r.states ?? "–"} | ${r.ms ?? "–"} |\n`;
   }
   md += "\n## Per level\n";
   for (const r of results) {
@@ -236,7 +255,7 @@ function report(results, problems, tunings) {
       }
     }
   }
-  md += "\n## Campaign rule\n\n" + (problems.length ? problems.map((p) => `- ${p}`).join("\n") : "All checks pass: every level raises at least one of C, B, D, BP, Q, M; no level drops more than one metric; levels 1–2 have BP = 1; every opening bus on level 1 wins; M = B everywhere; levels 4–12 each have a tempting wrong move.") + "\n";
+  md += "\n## Campaign rule\n\n" + (problems.length ? problems.map((p) => `- ${p}`).join("\n") : "All checks pass: every level raises at least one of C, B, D, BP, Mys and none of B, C, BP, Mys ever drops; levels 1–2 have BP = 1 and levels 1–4 BP <= 2 (spare bays); no mystery buses before level 6 and every mystery bus starts blocked; levels 1–3 block at most one deep; every opening bus on level 1 wins; M = B everywhere; no level needs all five bays; levels 4–12 each have a tempting wrong move.") + "\n";
   md += "\n## Tunings applied to the designed data (SPEC.md §7.4)\n\n" + tunings + "\n";
   return md;
 }
@@ -253,7 +272,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const r = analyseLevel(level);
     results.push(r);
     const t = r.tempting?.find((x) => x.stuckImmediately) || r.tempting?.[0];
-    console.log(`L${String(r.id).padStart(2)} ${r.name.padEnd(22)} solvable=${r.solvable} M=${r.M} BP=${r.BP} C=${r.metrics.C} B=${r.metrics.B} D=${r.metrics.D} Q=${r.metrics.Q} loop=${r.metrics.loop} tempting=${r.tempting?.length ?? 0}${t ? ` e.g. [${t.prefix.join(",")}] -> ${t.busId}` : ""} states=${r.states} ${r.ms}ms`);
+    console.log(`L${String(r.id).padStart(2)} ${r.name.padEnd(22)} solvable=${r.solvable} M=${r.M} BP=${r.BP} C=${r.metrics.C} B=${r.metrics.B} D=${r.metrics.D} Mys=${r.metrics.Mys} Q=${r.metrics.Q} loop=${r.metrics.loop} tempting=${r.tempting?.length ?? 0}${t ? ` e.g. [${t.prefix.join(",")}] -> ${t.busId}` : ""} states=${r.states} ${r.ms}ms`);
   }
   const problems = [...results.flatMap(levelProblems), ...(ids.length ? [] : campaignProblems(results))];
   if (!ids.length) {

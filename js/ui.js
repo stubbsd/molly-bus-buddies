@@ -6,8 +6,9 @@ export function showScreen(name) {
   for (const s of ["title", "levels", "game"]) $("screen-" + s).hidden = s !== name;
 }
 
-/** Show a calm card. actions: [{ label, soft?, onClick }]. */
-export function showCard(title, bodyHTML, actions) {
+/** Show a calm card. actions: [{ label, soft?, onClick }]; opts.variant "lose" sits lower with side-by-side buttons. */
+export function showCard(title, bodyHTML, actions, opts = {}) {
+  $("overlay").classList.toggle("lose", opts.variant === "lose");
   $("card-title").textContent = title;
   $("card-body").innerHTML = bodyHTML || "";
   const box = $("card-actions");
@@ -56,7 +57,9 @@ export function renderLevelGrid(index, progress, isUnlocked, onPick) {
 }
 
 export const HOW_TO_PLAY = `<div class="how">
-  <div><b>1</b><span>Tap a bus that has a clear way out.</span></div>
-  <div><b>2</b><span>People walk round the circle and hop on a bus of their colour.</span></div>
-  <div><b>3</b><span>A full bus drives away. Get everyone home!</span></div>
+  <div><b>1</b><span>Tap a bus. It drives the way its arrow points, if the road is clear.</span></div>
+  <div><b>2</b><span>Only the person at the front can hop on, onto a bus of their colour.</span></div>
+  <div><b>3</b><span>The number shows empty seats. At 0 the bus drives away.</span></div>
+  <div><b>4</b><span>Dark buses with a ? show their colour when their road is clear.</span></div>
+  <div><b>5</b><span>Keep a bay free! Five full bays means out of room.</span></div>
 </div>`;
