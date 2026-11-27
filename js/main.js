@@ -33,31 +33,35 @@ const ctx = canvas.getContext("2d");
 const D = {
   queue: [], loop: [], persons: new Map(), bays: [null, null, null, null, null],
   ghosts: [], flyers: [], events: [], nextAt: 0, shakes: new Map(), bumps: new Map(),
-  confetti: [], phase: 0, spin: 0, skip: null, pendingSettle: false,
+  confetti: [], phase: 0, spin: 0, skip: null, resync: null, armLens: null, pendingSettle: false,
 };
 
 const person = (colour) => ({ pid: ++pid, colour });
 const rad = (d) => (d * Math.PI) / 180;
 const norm = (a) => ((((a + 180) % 360) + 360) % 360) - 180; // -180..180
+const wrap = (x, n) => ((x % n) + n) % n;
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
 // Animation timings (ms). v1 -> v2: bus to bay 750 -> 360, depart 750 -> 360,
 // blocked shake 260 -> bump 320. People stay readable: hop 560, 150 between boarders.
-const T = { toBay: 360, depart: 360, bump: 320, hop: 560, boardGap: 150, enter: 70, loseCard: 520, skipSlot: 55, skipMax: 2200 };
+// hop/boardGap follow the reference stream: a tight walk from the door into the
+// bus, a slight shrink only as they go in. lap is one visual revolution (~7.5s
+// in the original video). Skip and idle use that constant speed, never a snap.
+const T = { toBay: 360, depart: 360, bump: 320, hop: 420, boardGap: 60, enter: 0, loseCard: 520, lap: 7500 };
 const HINT = "People hop on at the bottom of the circle";
 let loseTimer = 0;
 
 const busy = () => D.events.length > 0 || D.flyers.length > 0 || D.ghosts.some((g) => g.kind === "toBay");
 
-// D.loop is the packed ring (loop[0] stands at the bottom pickup). D.queue waits
-// in the two feeders. The ring turns when someone at the bottom has no bus, so
-// the next person arrives at the door; boarders always leave from the bottom.
+// D.loop is the packed ring (loop[0] is the next person the engine will pick
+// up). D.queue waits in the two feeders. The ring itself turns the whole time
+// at a steady speed; people peel off at the bottom door and walk into the bus.
 const line = () => D.loop.concat(D.queue);
 
 /** Visual place of loop[i] on the ring. Travel is clockwise: the next person to
- *  board approaches the door from the right. `spin` is how far a skip has turned. */
+ *  board approaches the door from the right. `spin` is the conveyor offset in slots. */
 function loopTarget(i, spin = 0) {
   const slots = L.ringSlots.length;
-  const pos = ((slots - i) + spin) % slots;
+  const pos = wrap((slots - i) + spin, slots);
   const k0 = Math.floor(pos) % slots, u = pos - Math.floor(pos), k1 = (k0 + 1) % slots;
   const a0 = ringSlot(L, k0), a1 = ringSlot(L, k1);
   let d = a1.a - a0.a; if (d < 0) d += 360;
@@ -68,9 +72,10 @@ function lineTargets() {
   const n = [0, 0];
   const ring = D.loop.map((p, i) => { const t = loopTarget(i, D.spin); return { mode: "l", a: t.a, r: t.r }; });
   const feed = D.queue.map((p, i) => {
-    const arm = Math.floor(i / 3) % 2;
+    const per = D.persons.get(p.pid);
+    const arm = per?.arm ?? (Math.floor(i / 3) % 2);
     const q = queuePoint(L, arm, n[arm]++);
-    return { mode: "q", x: q.x, y: q.y };
+    return { mode: "q", x: q.x, y: q.y, arm };
   });
   return ring.concat(feed);
 }
@@ -86,9 +91,20 @@ function rebuildDisplay() {
   D.loop = s.loop.map(person);
   D.persons = new Map();
   const all = line();
-  lineTargets().forEach((t, i) => { const per = { mode: t.mode, x: 0, y: 0, a: 0, r: 0 }; placeNow(per, t); D.persons.set(all[i].pid, per); });
+  lineTargets().forEach((t, i) => {
+    const per = { mode: t.mode, x: 0, y: 0, a: 0, r: 0, arm: t.arm, merging: false };
+    placeNow(per, t);
+    if (t.mode === "q") per.arm = t.arm;
+    D.persons.set(all[i].pid, per);
+  });
+  // Lock each waiting person to one feeder so a later shift cannot throw them
+  // across to the other arm (that was the main "flash" on the sides).
+  D.queue.forEach((p, i) => {
+    const per = D.persons.get(p.pid);
+    if (per && per.arm == null) per.arm = Math.floor(i / 3) % 2;
+  });
   D.bays = s.bays.map((b) => (b ? { id: b.id, colour: b.colour, capacity: b.capacity, filled: b.filled, pending: 0 } : null));
-  D.ghosts = []; D.flyers = []; D.events = []; D.pendingSettle = false; D.spin = 0; D.skip = null;
+  D.ghosts = []; D.flyers = []; D.events = []; D.pendingSettle = false; D.spin = 0; D.skip = null; D.resync = null; D.armLens = null;
 }
 
 function snapPositions() {
@@ -123,13 +139,20 @@ function resize() {
 // Feeders are drawn only as long as the line of people in them (redrawn when a row
 // of three leaves), so there is never empty feeder track on show.
 let bgKey = "";
-function refreshBackground() {
-  if (!bg || !L) return;
+function wantedArmLens() {
   const n = [0, 0];
   if (session) {
-    D.queue.forEach((_, i) => { n[Math.floor(i / 3) % 2]++; });
+    D.queue.forEach((p, i) => {
+      const per = D.persons.get(p.pid);
+      n[per?.arm ?? (Math.floor(i / 3) % 2)]++;
+    });
   }
-  const lens = n.map((c) => armNeed(L, c));
+  return n.map((c) => armNeed(L, c));
+}
+
+function refreshBackground() {
+  if (!bg || !L) return;
+  const lens = D.armLens || wantedArmLens();
   const key = lens.map((x) => Math.round(x)).join(",");
   if (key === bgKey) return;
   bgKey = key;
@@ -143,39 +166,189 @@ window.addEventListener("orientationchange", () => setTimeout(resize, 200));
 // ---------------- frame loop ----------------
 let last = performance.now();
 let raf = 0;
+const frameDts = [];
 function frame(now) {
   raf = requestAnimationFrame(frame);
-  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const raw = now - last;
+  const dt = Math.min(0.05, raw / 1000); last = now;
+  if (frameDts.length >= 180) frameDts.shift();
+  frameDts.push(raw);
   if (!session || $("screen-game").hidden) return;
   step(now, dt);
   draw(now);
 }
 
+function slotsOf() { return L.ringSlots.length; }
+
+function conveyorOmega() {
+  return RM() ? 0 : slotsOf() / (T.lap / 1000);
+}
+
+function nearDoor(p) {
+  if (!p || !L) return true;
+  const per = D.persons.get(p.pid);
+  if (!per) return true;
+  // The door point sits on the outer rim, so inner-lane people are further
+  // away in pixels; judge by angle around the island instead (6 o'clock).
+  const a = (Math.atan2(per.y - L.island.cy, per.x - L.island.cx) * 180) / Math.PI;
+  if (Math.abs(norm(a - 90)) <= 18) return true;
+  return Math.hypot(per.x - L.door.x, per.y - L.door.y) <= L.br * 3.4;
+}
+
+function personAtDoor() {
+  let best = null, bestD = Infinity;
+  for (const p of D.loop) {
+    const per = D.persons.get(p.pid);
+    if (!per || per.merging) continue;
+    const d = Math.hypot(per.x - L.door.x, per.y - L.door.y);
+    if (d < bestD) { bestD = d; best = { p, per }; }
+  }
+  return best;
+}
+
+function flyerPose(f, now) {
+  const t = Math.min(1, (now - f.t0) / f.dur);
+  const bay = L.bays[f.bay];
+  const end = { x: bay.cx, y: bay.cy - bay.h * 0.12 };
+  const c = { x: f.x0 * 0.35 + end.x * 0.65, y: L.laneBottom.y };
+  const u = t; // steady walk, like the reference stream
+  const x = (1 - u) * (1 - u) * f.x0 + 2 * (1 - u) * u * c.x + u * u * end.x;
+  const y = (1 - u) * (1 - u) * f.y0 + 2 * (1 - u) * u * c.y + u * u * end.y;
+  let scale = 1, alpha = 1;
+  if (t > 0.8) {
+    const w = (t - 0.8) / 0.2;
+    scale = 1 - 0.45 * w;
+    alpha = 1 - 0.85 * w;
+  }
+  return { x, y, t, scale, alpha };
+}
+
+function stepArmLens(dt) {
+  if (!L) return;
+  const need = wantedArmLens();
+  if (!D.armLens) D.armLens = need.slice();
+  const k = RM() ? 1 : 1 - Math.exp(-dt * 6);
+  D.armLens = D.armLens.map((v, i) => v + (need[i] - v) * k);
+}
+
+function movePeople(dt) {
+  const circ = 2 * Math.PI * (L.island.Rm || L.ringR[1]);
+  const v = circ / (T.lap / 1000);
+  const maxPx = RM() ? 1e9 : Math.max(8, v * 1.2) * dt;
+  const maxDeg = RM() ? 1e9 : (360 / (T.lap / 1000)) * 1.5 * dt;
+  const all = line();
+  lineTargets().forEach((t, i) => {
+    const per = D.persons.get(all[i].pid);
+    if (!per) return;
+    if (t.mode === "q") {
+      per.mode = "q";
+      per.merging = false;
+      const dx = t.x - per.x, dy = t.y - per.y, d = Math.hypot(dx, dy);
+      const s = d <= maxPx ? 1 : maxPx / (d || 1);
+      per.x += dx * s; per.y += dy * s;
+      return;
+    }
+    // People already on the ring stay glued to the conveyor once they have
+    // caught their slot. Until then they walk along the ring at a capped
+    // speed, so a merge from the side never snaps across the grass.
+    if (t.mode === "l" && per.mode === "l" && !per.merging) {
+      const delta0 = ((((t.a - per.a) % 360) + 540) % 360) - 180;
+      if (Math.abs(delta0) <= maxDeg + 0.5 && Math.abs(t.r - per.r) <= maxPx + 2) {
+        per.a = t.a; per.r = t.r;
+        Object.assign(per, loopXY(L, per.a, per.r));
+        return;
+      }
+      per.a += Math.sign(delta0 || 0) * Math.min(Math.abs(delta0), maxDeg);
+      const dr0 = t.r - per.r;
+      per.r += Math.sign(dr0 || 0) * Math.min(Math.abs(dr0), maxPx);
+      Object.assign(per, loopXY(L, per.a, per.r));
+      return;
+    }
+    // Newly entered people walk to their own arm's join first, then step onto
+    // the ring and follow it. Never chord across the grass.
+    if (per.merging || per.mode !== "l") {
+      const join = L.arms[per.arm ?? 0].J;
+      const dJ = Math.hypot(per.x - join.x, per.y - join.y);
+      if (!RM() && dJ > L.br * 1.8) {
+        per.merging = true;
+        const dx = join.x - per.x, dy = join.y - per.y, d = Math.hypot(dx, dy);
+        const s = d <= maxPx ? 1 : maxPx / (d || 1);
+        per.x += dx * s; per.y += dy * s;
+        return;
+      }
+      per.merging = false;
+      per.mode = "l";
+      per.a = (Math.atan2(per.y - L.island.cy, per.x - L.island.cx) * 180) / Math.PI;
+      per.r = Math.hypot(per.y - L.island.cy, per.x - L.island.cx);
+    }
+    const delta = ((((t.a - per.a) % 360) + 540) % 360) - 180;
+    per.a += Math.sign(delta || 0) * Math.min(Math.abs(delta), maxDeg);
+    const dr = t.r - per.r;
+    per.r += Math.sign(dr || 0) * Math.min(Math.abs(dr), maxPx);
+    Object.assign(per, loopXY(L, per.a, per.r));
+  });
+}
+
 function step(now, dt) {
   const speed = RM() ? 0.15 : 1;
-  // play out settle events. The ring only turns when someone at the bottom has
-  // no bus (a skip). prefers-reduced-motion snaps those turns so boarding still works.
-  while (D.events.length && now >= D.nextAt) {
+  const slots = slotsOf();
+  let omega = conveyorOmega();
+  if (D.resync) {
+    if (RM() || D.resync.dur <= 0) { D.spin = 0; D.resync = null; }
+    else {
+      const u = Math.min(1, (now - D.resync.t0) / D.resync.dur);
+      D.spin = D.resync.from + (D.resync.to - D.resync.from) * u;
+      if (u >= 1) { D.spin = 0; D.resync = null; }
+    }
+    omega = 0;
+  }
+  // Tight stream: when the next boarder is still a slot away, ease them to the
+  // door a little faster so a run of boarders looks like the reference pour.
+  if (!RM() && !D.resync && D.events[0]?.type === "board" && D.loop[0] && !nearDoor(D.loop[0])) {
+    omega *= 1.6;
+  }
+  // Hold loop[0] at the door while their bus is still pulling in, so the ring
+  // does not carry them past it and wait a whole lap.
+  const ev0 = D.events[0];
+  if (!RM() && !D.resync && ev0?.type === "board" && D.loop[0] && nearDoor(D.loop[0])
+      && D.ghosts.some((g) => g.kind === "toBay" && g.bay === ev0.bay)) {
+    omega = 0;
+  }
+  if (omega > 0) D.spin += omega * dt;
+
+  // Play settle events against the moving conveyor. Skips are just continued
+  // rotation; reduced motion snaps the array so boarding still works.
+  while (D.events.length && now >= D.nextAt && !D.resync) {
     const e = D.events[0];
     const arriving = D.ghosts.some((g) => g.kind === "toBay" && g.bay === e.bay);
     if (e.type === "skip") {
-      if (!D.skip) {
-        D.skip = { n: e.n, t0: now, dur: RM() ? 0 : Math.max(80, Math.min(T.skipSlot * e.n, T.skipMax)) * speed };
+      if (RM()) {
+        for (let i = 0; i < e.n; i++) D.loop.push(D.loop.shift());
+        D.spin = 0; D.skip = null; D.nextAt = now;
+      } else {
+        if (!D.skip) D.skip = { n: e.n, start: D.spin };
+        if (D.spin < D.skip.start + e.n) break;
+        for (let i = 0; i < e.n; i++) D.loop.push(D.loop.shift());
+        D.spin -= e.n; D.skip = null; D.nextAt = now;
       }
-      const u = D.skip.dur <= 0 ? 1 : (now - D.skip.t0) / D.skip.dur;
-      if (u < 1) { D.spin = D.skip.n * ease(Math.max(0, u)); break; }
-      for (let i = 0; i < e.n; i++) D.loop.push(D.loop.shift());
-      D.spin = 0; D.skip = null;
-      D.nextAt = now;
     } else if (e.type === "enter") {
-      if (D.queue.length) D.loop.push(D.queue.shift());
-      D.nextAt = now + T.enter * speed;
+      if (D.queue.length) {
+        const p = D.queue.shift();
+        const per = D.persons.get(p.pid);
+        if (per) per.merging = true;
+        D.loop.push(p);
+      }
+      D.nextAt = now;
     } else if (e.type === "board") {
       if (arriving) break;
+      if (!D.loop.length) { D.events.shift(); continue; }
+      if (!RM() && !nearDoor(D.loop[0])) break;
       const p = D.loop.shift();
-      const per = D.persons.get(p.pid); per.mode = "f";
-      D.flyers.push({ pid: p.pid, colour: p.colour, x0: per.x, y0: per.y, t0: now, dur: T.hop * speed, bay: e.bay });
+      const per = D.persons.get(p.pid); per.mode = "f"; per.merging = false;
+      const pose = { x: per.x, y: per.y };
+      D.flyers.push({ pid: p.pid, colour: p.colour, x0: pose.x, y0: pose.y, x: pose.x, y: pose.y, t0: now, dur: T.hop * speed, bay: e.bay });
       D.bays[e.bay].pending++;
+      D.spin -= 1; // keep everyone else where they are; the gap closes at the door
       D.nextAt = now + T.boardGap * speed;
     } else if (e.type === "depart") {
       if (arriving || D.flyers.some((f) => f.bay === e.bay)) break;
@@ -186,9 +359,15 @@ function step(now, dt) {
     }
     D.events.shift();
   }
-  // flyers land
+  if (!D.events.length && !D.skip) {
+    while (D.spin >= slots) D.spin -= slots;
+    while (D.spin < 0) D.spin += slots;
+  }
+
   for (const f of D.flyers) {
-    if ((now - f.t0) / f.dur >= 1) {
+    const pose = flyerPose(f, now);
+    f.x = pose.x; f.y = pose.y;
+    if (pose.t >= 1) {
       f.done = true;
       D.persons.delete(f.pid);
       const b = D.bays[f.bay];
@@ -205,28 +384,8 @@ function step(now, dt) {
     }
   }
   D.ghosts = D.ghosts.filter((g) => !g.done);
-  // people glide towards their places
-  const k = RM() || D.skip ? 1 : 1 - Math.exp(-dt * 9);
-  const all = line();
-  lineTargets().forEach((t, i) => {
-    const per = D.persons.get(all[i].pid);
-    if (!per) return;
-    if (t.mode === "q") {
-      per.mode = "q";
-      per.x += (t.x - per.x) * k; per.y += (t.y - per.y) * k;
-      return;
-    }
-    if (per.mode !== "l") { // stepping off a feeder onto the ring
-      per.mode = "l";
-      per.a = (Math.atan2(per.y - L.island.cy, per.x - L.island.cx) * 180) / Math.PI;
-      per.r = Math.hypot(per.y - L.island.cy, per.x - L.island.cx);
-    }
-    let delta = ((((t.a - per.a) % 360) + 540) % 360) - 180;
-    per.a += delta * k;
-    per.r += (t.r - per.r) * k;
-    Object.assign(per, loopXY(L, per.a, per.r));
-  });
-  // confetti
+  movePeople(dt);
+  stepArmLens(dt);
   for (const c of D.confetti) { c.vy += 600 * dt; c.x += c.vx * dt; c.y += c.vy * dt; c.life -= dt; }
   D.confetti = D.confetti.filter((c) => c.life > 0);
   if (D.pendingSettle && !busy()) { D.pendingSettle = false; afterSettle(); }
@@ -239,15 +398,17 @@ function draw(now) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const br = L.br;
   const all = line();
-  for (let i = all.length - 1; i >= 1; i--) { const per = D.persons.get(all[i].pid); if (per) drawBead(ctx, all[i].colour, per.x, per.y, br, dpr); }
-  // the person at the front of the line glows: only they can board
-  const front = all[0];
-  if (front) {
-    const per = D.persons.get(front.pid);
-    if (per) {
-      if (!session.state.lost) drawFrontGlow(ctx, per.x, per.y, br * (RM() ? 1.15 : 1.15 + 0.12 * Math.sin(now / 180)));
-      drawBead(ctx, front.colour, per.x, per.y, br, dpr);
-    }
+  const doorP = personAtDoor();
+  const doorPid = doorP?.p.pid;
+  for (let i = all.length - 1; i >= 0; i--) {
+    const per = D.persons.get(all[i].pid);
+    if (!per || all[i].pid === doorPid) continue;
+    drawBead(ctx, all[i].colour, per.x, per.y, br, dpr);
+  }
+  // the person visually at the bottom door glows: they are next off the ring
+  if (doorP) {
+    if (!session.state.lost) drawFrontGlow(ctx, doorP.per.x, doorP.per.y, br * (RM() ? 1.15 : 1.15 + 0.12 * Math.sin(now / 180)));
+    drawBead(ctx, doorP.p.colour, doorP.per.x, doorP.per.y, br, dpr);
   }
   // bay buses
   D.bays.forEach((b, i) => {
@@ -318,19 +479,11 @@ function draw(now) {
       ctx.restore();
     }
   }
-  // flyers: walk to the door at 6 o'clock, then hop down the lane into the bus
+  // flyers: a tight stream from the door down the lane into the bus, matching
+  // the reference. They keep their size until the last step, then shrink and fade in.
   for (const f of D.flyers) {
-    const t = Math.min(1, (now - f.t0) / f.dur);
-    const bay = L.bays[f.bay];
-    let x, y;
-    if (t < 0.35) { const u = ease(t / 0.35); x = f.x0 + (L.door.x - f.x0) * u; y = f.y0 + (L.door.y - f.y0) * u; }
-    else {
-      const u = ease((t - 0.35) / 0.65);
-      const c = L.laneBottom, end = { x: bay.cx, y: bay.cy - bay.h * 0.2 };
-      x = (1 - u) * (1 - u) * L.door.x + 2 * (1 - u) * u * c.x + u * u * end.x;
-      y = (1 - u) * (1 - u) * L.door.y + 2 * (1 - u) * u * c.y + u * u * end.y - Math.sin(u * Math.PI) * br * 1.5;
-    }
-    drawBead(ctx, f.colour, x, y, br, dpr, t > 0.92 ? 1 - (t - 0.92) * 6 : 1);
+    const pose = flyerPose(f, now);
+    drawBead(ctx, f.colour, pose.x, pose.y, br * pose.scale, dpr, pose.alpha);
   }
   for (const c of D.confetti) drawBead(ctx, c.colour, c.x, c.y, br * 0.8, dpr);
 }
@@ -389,6 +542,17 @@ function tapBus(id) {
   D.events.push(...r.events);
   D.nextAt = now;
   D.pendingSettle = true;
+  // Bring loop[0] back to the door at the same visual speed as the conveyor.
+  // If they have only just left the door, rewind the short way; otherwise keep
+  // turning forwards. Never whirl (a fast catch-up looked like a flash).
+  const sl = L.ringSlots.length;
+  const s = wrap(D.spin, sl);
+  if (!RM() && s > 0.08) {
+    const back = s < sl * 0.35;
+    const rem = back ? s : sl - s;
+    const natural = rem / (sl / (T.lap / 1000)) * 1000;
+    D.resync = { from: D.spin, to: D.spin + (back ? -rem : rem), t0: now, dur: Math.max(40, natural) };
+  } else D.spin = D.spin - s;
   updateUndo();
   save();
 }
@@ -534,7 +698,43 @@ window.__busBuddies = {
     }).filter(Boolean);
   },
   boarders() {
-    return D.flyers.map((f) => ({ colour: f.colour, x0: f.x0, y0: f.y0, t: (performance.now() - f.t0) / f.dur }));
+    const now = performance.now();
+    return D.flyers.map((f) => {
+      const pose = L ? flyerPose(f, now) : { x: f.x0, y: f.y0, t: 0 };
+      return { id: f.pid, colour: f.colour, x0: f.x0, y0: f.y0, x: pose.x, y: pose.y, t: pose.t };
+    });
+  },
+  people() {
+    if (!session || !L) return [];
+    const now = performance.now();
+    const out = [];
+    for (const p of D.loop) {
+      const per = D.persons.get(p.pid);
+      if (per) out.push({ id: p.pid, colour: p.colour, x: per.x, y: per.y, role: per.merging ? "merge" : "ring" });
+    }
+    for (const p of D.queue) {
+      const per = D.persons.get(p.pid);
+      if (per) out.push({ id: p.pid, colour: p.colour, x: per.x, y: per.y, role: "feeder" });
+    }
+    for (const f of D.flyers) {
+      const pose = flyerPose(f, now);
+      out.push({ id: f.pid, colour: f.colour, x: pose.x, y: pose.y, role: "boarder" });
+    }
+    return out;
+  },
+  frameTimes() { return frameDts.slice(); },
+  capture(ms = 1000) {
+    return new Promise((resolve) => {
+      const out = [];
+      const t0 = performance.now();
+      const tick = (now) => {
+        const people = window.__busBuddies.people().map((p) => ({ id: p.id, role: p.role, x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, colour: p.colour }));
+        out.push({ t: now, people, phase: D.spin, busy: busy(), flyers: D.flyers.length });
+        if (now - t0 < ms) requestAnimationFrame(tick);
+        else resolve(out);
+      };
+      requestAnimationFrame(tick);
+    });
   },
 };
 
