@@ -9,7 +9,7 @@ Play it at https://stubbsd.github.io/molly-bus-buddies/ (GitHub Pages, served fr
 ## Rules (v2)
 
 1. **Roof arrows.** Each parked bus has a white arrow on its roof and can only drive out that way. If another bus is in front of it, it bumps gently and stays put (no move, nothing to undo).
-2. **Front of the queue only.** People walk round the circle in order. Only the person at the front (with the soft glow) can hop on, onto the earliest-arrived bay bus of their colour. A wrong colour at the front holds everyone up.
+2. **Front of the queue only.** People stream down two feeders and pack the ring three abreast in colour bands. The packed ring turns like a conveyor (it stops if the device asks for less motion). Only the person at the front of the line (with the soft glow) can hop on: they leave at the door at the bottom and walk down to the bay. A wrong colour at the front holds everyone up.
 3. **Seat countdowns.** The yellow badge on a bay bus shows its empty seats. At 0 it drives off and frees the bay.
 4. **Mystery buses.** Dark buses with a `?` show their colour once their road is clear.
 5. **Out of room.** If all five bays are full and another bus is sent out, a gentle "Out of room!" card offers Try again or Undo.

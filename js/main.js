@@ -60,7 +60,7 @@ function lineTargets() {
   const off = boardedSoFar();
   const n = [0, 0];
   return all.map((p, i) => {
-    if (i < L.ringCap) { const t = ringSlot(L, i); return { mode: "l", a: t.a, r: t.r }; }
+    if (i < L.ringCap) { const t = ringSlot(L, i, D.phase); return { mode: "l", a: t.a, r: t.r }; }
     const arm = Math.max(0, L.armOf[off + i] ?? 0);
     const q = queuePoint(L, arm, n[arm]++);
     return { mode: "q", x: q.x, y: q.y };
@@ -146,6 +146,10 @@ function frame(now) {
 
 function step(now, dt) {
   const speed = RM() ? 0.15 : 1;
+  // Visual-only conveyor: the packed ring goes round clockwise, about ten
+  // seconds a lap. Boarding still takes the front person to the door, then
+  // down to the bay. prefers-reduced-motion stops the spin.
+  if (!RM()) D.phase += (360 / 10) * dt;
   // play out settle events
   while (D.events.length && now >= D.nextAt) {
     const e = D.events[0];
@@ -503,6 +507,15 @@ window.__busBuddies = {
   tap: (id) => { const p = busPos(L, session.state.parked.find((b) => b.id === id)); onTap(p.x, p.y); },
   get state() { return session && clone(session.state); },
   get busy() { return busy(); },
+  get phase() { return D.phase; },
+  // Packed ring people, in line order, for the rotation check.
+  ringPeople() {
+    if (!session || !L) return [];
+    return line().slice(0, L.ringCap).map((p) => {
+      const per = D.persons.get(p.pid);
+      return per ? { id: p.pid, colour: p.colour, x: per.x, y: per.y, a: per.a } : null;
+    }).filter(Boolean);
+  },
 };
 
 if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname))) {

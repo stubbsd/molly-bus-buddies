@@ -91,8 +91,25 @@ async function tapAll(ids) { for (const id of ids) { await evaluate(`window.__bu
 // 1. iPhone title
 await go(BASE, 390, 844); await fresh(); await go(BASE, 390, 844);
 await shot("01-iphone-title.png");
-// 2. iPhone level 1
-await go(BASE + "?level=1", 390, 844); await sleep(1200);
+// 2. iPhone level 1, and a check that the packed ring turns over time
+await go(BASE + "?level=1", 390, 844); await sleep(400);
+const ring0 = await evaluate("window.__busBuddies.ringPeople()");
+await shot("12-ring-frame-0.png");
+await sleep(800);
+const ring1 = await evaluate("window.__busBuddies.ringPeople()");
+await shot("12-ring-frame-1.png");
+await sleep(800);
+const ring2 = await evaluate("window.__busBuddies.ringPeople()");
+await shot("12-ring-frame-2.png");
+function ringMoved(a, b) {
+  if (!a?.length || a.length !== b?.length) return false;
+  let max = 0;
+  for (let i = 0; i < a.length; i++) max = Math.max(max, Math.hypot(a[i].x - b[i].x, a[i].y - b[i].y));
+  return max;
+}
+const d01 = ringMoved(ring0, ring1), d12 = ringMoved(ring1, ring2);
+console.log("ring rotation: people=" + (ring0?.length ?? 0) + " move 0->1=" + Math.round(d01) + "px 1->2=" + Math.round(d12) + "px phase=" + (await evaluate("window.__busBuddies.phase")));
+if (!(d01 > 8 && d12 > 8)) throw new Error("packed ring did not rotate (moves " + d01 + ", " + d12 + " px)");
 await shot("02-iphone-level1.png");
 // 3. iPhone mid-level (compare with mockups/v2/01-gameplay.png): buses in bays with countdowns,
 // mystery buses, the front person glowing and a blocked bus bumping.

@@ -178,10 +178,12 @@ export function loopXY(L, angleDeg, r = L.ringR[1]) {
   return { x: cx + r * Math.cos(rad(angleDeg)), y: cy + r * Math.sin(rad(angleDeg)) };
 }
 
-/** Ring place i (0 = the front, at the door) as an angle (degrees) and radius. */
-export function ringSlot(L, i) {
+/** Ring place i (0 = the front, at the door) as an angle (degrees) and radius.
+ *  phaseDeg is a visual-only spin: the packed crowd goes round the circle, but
+ *  the order of people and the rules engine are unchanged. */
+export function ringSlot(L, i, phaseDeg = 0) {
   const s = L.ringSlots[Math.min(i, L.ringSlots.length - 1)];
-  return { a: 90 + s.f * 360, r: s.r };
+  return { a: 90 + s.f * 360 + phaseDeg, r: s.r };
 }
 
 /**
