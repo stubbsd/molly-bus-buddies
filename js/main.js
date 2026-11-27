@@ -6,7 +6,7 @@ import {
   computeLayout, busPos, ringSlot, queuePoint, loopXY, hitBus, armNeed, drawBead, drawBus, drawBackground,
   drawMysteryBus, drawCountdown, drawFrontGlow, drawBumpBurst,
 } from "./render.js";
-import { loadProgress, saveProgress, isUnlocked } from "./storage.js";
+import { loadProgress, saveProgress, isUnlocked, LEVEL_COUNT } from "./storage.js";
 import { loadIndex, loadLevel, preloadAll } from "./levels.js";
 import * as audio from "./audio.js";
 import * as ui from "./ui.js";
@@ -33,7 +33,7 @@ const ctx = canvas.getContext("2d");
 const D = {
   queue: [], loop: [], persons: new Map(), bays: [null, null, null, null, null],
   ghosts: [], flyers: [], events: [], nextAt: 0, shakes: new Map(), bumps: new Map(),
-  confetti: [], phase: 0, pendingSettle: false,
+  confetti: [], phase: 0, spin: 0, skip: null, pendingSettle: false,
 };
 
 const person = (colour) => ({ pid: ++pid, colour });
@@ -42,29 +42,37 @@ const norm = (a) => ((((a + 180) % 360) + 360) % 360) - 180; // -180..180
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
 // Animation timings (ms). v1 -> v2: bus to bay 750 -> 360, depart 750 -> 360,
 // blocked shake 260 -> bump 320. People stay readable: hop 560, 150 between boarders.
-const T = { toBay: 360, depart: 360, bump: 320, hop: 560, boardGap: 150, enter: 70, loseCard: 520 };
-const HINT = "Only the front person can hop on";
+const T = { toBay: 360, depart: 360, bump: 320, hop: 560, boardGap: 150, enter: 70, loseCard: 520, skipSlot: 55, skipMax: 2200 };
+const HINT = "People hop on at the bottom of the circle";
 let loseTimer = 0;
 
 const busy = () => D.events.length > 0 || D.flyers.length > 0 || D.ghosts.some((g) => g.kind === "toBay");
 
-// Everyone still waiting is one line: D.loop (on the ring, engine side) then D.queue.
-// On screen the first L.ringCap people fill the ring, packed from the door back round
-// the lap; the rest wait in the two feeders (L.armOf says which, by place in the
-// level's whole line). When the front person hops on, everyone shuffles up one place.
+// D.loop is the packed ring (loop[0] stands at the bottom pickup). D.queue waits
+// in the two feeders. The ring turns when someone at the bottom has no bus, so
+// the next person arrives at the door; boarders always leave from the bottom.
 const line = () => D.loop.concat(D.queue);
-const boardedSoFar = () => session.level.queue.length - D.loop.length - D.queue.length;
+
+/** Visual place of loop[i] on the ring. Travel is clockwise: the next person to
+ *  board approaches the door from the right. `spin` is how far a skip has turned. */
+function loopTarget(i, spin = 0) {
+  const slots = L.ringSlots.length;
+  const pos = ((slots - i) + spin) % slots;
+  const k0 = Math.floor(pos) % slots, u = pos - Math.floor(pos), k1 = (k0 + 1) % slots;
+  const a0 = ringSlot(L, k0), a1 = ringSlot(L, k1);
+  let d = a1.a - a0.a; if (d < 0) d += 360;
+  return { a: a0.a + d * u, r: a0.r + (a1.r - a0.r) * u };
+}
 
 function lineTargets() {
-  const all = line();
-  const off = boardedSoFar();
   const n = [0, 0];
-  return all.map((p, i) => {
-    if (i < L.ringCap) { const t = ringSlot(L, i, D.phase); return { mode: "l", a: t.a, r: t.r }; }
-    const arm = Math.max(0, L.armOf[off + i] ?? 0);
+  const ring = D.loop.map((p, i) => { const t = loopTarget(i, D.spin); return { mode: "l", a: t.a, r: t.r }; });
+  const feed = D.queue.map((p, i) => {
+    const arm = Math.floor(i / 3) % 2;
     const q = queuePoint(L, arm, n[arm]++);
     return { mode: "q", x: q.x, y: q.y };
   });
+  return ring.concat(feed);
 }
 
 function placeNow(per, t) {
@@ -80,7 +88,7 @@ function rebuildDisplay() {
   const all = line();
   lineTargets().forEach((t, i) => { const per = { mode: t.mode, x: 0, y: 0, a: 0, r: 0 }; placeNow(per, t); D.persons.set(all[i].pid, per); });
   D.bays = s.bays.map((b) => (b ? { id: b.id, colour: b.colour, capacity: b.capacity, filled: b.filled, pending: 0 } : null));
-  D.ghosts = []; D.flyers = []; D.events = []; D.pendingSettle = false;
+  D.ghosts = []; D.flyers = []; D.events = []; D.pendingSettle = false; D.spin = 0; D.skip = null;
 }
 
 function snapPositions() {
@@ -119,8 +127,7 @@ function refreshBackground() {
   if (!bg || !L) return;
   const n = [0, 0];
   if (session) {
-    const off = boardedSoFar(), all = line();
-    for (let i = L.ringCap; i < all.length; i++) n[Math.max(0, L.armOf[off + i] ?? 0)]++;
+    D.queue.forEach((_, i) => { n[Math.floor(i / 3) % 2]++; });
   }
   const lens = n.map((c) => armNeed(L, c));
   const key = lens.map((x) => Math.round(x)).join(",");
@@ -146,17 +153,23 @@ function frame(now) {
 
 function step(now, dt) {
   const speed = RM() ? 0.15 : 1;
-  // Visual-only conveyor: the packed ring goes round clockwise, about ten
-  // seconds a lap. Boarding still takes the front person to the door, then
-  // down to the bay. prefers-reduced-motion stops the spin.
-  if (!RM()) D.phase += (360 / 10) * dt;
-  // play out settle events
+  // play out settle events. The ring only turns when someone at the bottom has
+  // no bus (a skip). prefers-reduced-motion snaps those turns so boarding still works.
   while (D.events.length && now >= D.nextAt) {
     const e = D.events[0];
     const arriving = D.ghosts.some((g) => g.kind === "toBay" && g.bay === e.bay);
-    if (e.type === "enter") {
-      D.loop.push(D.queue.shift()); // same place in the line, so nobody jumps
+    if (e.type === "skip") {
+      if (!D.skip) {
+        D.skip = { n: e.n, t0: now, dur: RM() ? 0 : Math.max(80, Math.min(T.skipSlot * e.n, T.skipMax)) * speed };
+      }
+      const u = D.skip.dur <= 0 ? 1 : (now - D.skip.t0) / D.skip.dur;
+      if (u < 1) { D.spin = D.skip.n * ease(Math.max(0, u)); break; }
+      for (let i = 0; i < e.n; i++) D.loop.push(D.loop.shift());
+      D.spin = 0; D.skip = null;
       D.nextAt = now;
+    } else if (e.type === "enter") {
+      if (D.queue.length) D.loop.push(D.queue.shift());
+      D.nextAt = now + T.enter * speed;
     } else if (e.type === "board") {
       if (arriving) break;
       const p = D.loop.shift();
@@ -193,7 +206,7 @@ function step(now, dt) {
   }
   D.ghosts = D.ghosts.filter((g) => !g.done);
   // people glide towards their places
-  const k = RM() ? 1 : 1 - Math.exp(-dt * 9);
+  const k = RM() || D.skip ? 1 : 1 - Math.exp(-dt * 9);
   const all = line();
   lineTargets().forEach((t, i) => {
     const per = D.persons.get(all[i].pid);
@@ -349,11 +362,15 @@ async function startLevel(id, resume = true) {
 function updateUndo() { ui.setUndoEnabled(session && session.undoStack.length > 0); }
 
 function onTap(x, y) {
+  const id = session && hitBus(L, session.state.parked, x, y);
+  if (id) tapBus(id);
+}
+
+function tapBus(id) {
   if (!session || ui.cardOpen() || busy() || isWon(session.state) || isLost(session.state)) return;
-  const id = hitBus(L, session.state.parked, x, y);
-  if (!id) return;
   const before = session.state;
   const bus = before.parked.find((b) => b.id === id);
+  if (!bus) return;
   const r = sessionTap(session, id);
   if (!r.moved) { D.shakes.set(id, performance.now()); audio.play("shake", 0.4); return; }
   audio.play("tap", 0.4);
@@ -412,7 +429,7 @@ function celebrate() {
   if (!progress.completedLevels.includes(id)) progress.completedLevels.push(id);
   progress.completedLevels.sort((a, b) => a - b);
   progress.inProgress = null;
-  progress.currentLevel = Math.min(12, id + 1);
+  progress.currentLevel = Math.min(LEVEL_COUNT, id + 1);
   saveProgress(progress);
   ui.setHint("Nice planning, Molly!");
   audio.play("win", 0.5);
@@ -424,9 +441,9 @@ function celebrate() {
   }
   setTimeout(() => {
     const actions = [];
-    if (id < 12) actions.push({ label: "Next level", onClick: () => startLevel(id + 1, false) });
-    actions.push({ label: "Levels", soft: id < 12, onClick: openLevels });
-    ui.showCard("Well done, Molly!", id === 12 ? "You finished every level. What a planner!" : "Everyone got a seat.", actions);
+    if (id < LEVEL_COUNT) actions.push({ label: "Next level", onClick: () => startLevel(id + 1, false) });
+    actions.push({ label: "Levels", soft: id < LEVEL_COUNT, onClick: openLevels });
+    ui.showCard("Well done, Molly!", id === LEVEL_COUNT ? "You finished every level. What a planner!" : "Everyone got a seat.", actions);
   }, RM() ? 300 : 1400);
 }
 
@@ -466,8 +483,8 @@ async function openLevels() {
 
 function firstOpenLevel() {
   if (progress.inProgress) return progress.inProgress.levelId;
-  for (let i = 1; i <= 12; i++) if (!progress.completedLevels.includes(i)) return i;
-  return 12;
+  for (let i = 1; i <= LEVEL_COUNT; i++) if (!progress.completedLevels.includes(i)) return i;
+  return LEVEL_COUNT;
 }
 
 function drawTitleArt() {
@@ -504,17 +521,20 @@ window.addEventListener("pagehide", save);
 // Small hook for automated checks (screenshots, offline test). Harmless in play.
 window.__busBuddies = {
   start: (id) => startLevel(id, false),
-  tap: (id) => { const p = busPos(L, session.state.parked.find((b) => b.id === id)); onTap(p.x, p.y); },
+  tap: (id) => tapBus(id),
   get state() { return session && clone(session.state); },
   get busy() { return busy(); },
-  get phase() { return D.phase; },
-  // Packed ring people, in line order, for the rotation check.
+  get phase() { return D.spin; },
+  get door() { return L && { x: L.door.x, y: L.door.y }; },
   ringPeople() {
     if (!session || !L) return [];
-    return line().slice(0, L.ringCap).map((p) => {
+    return D.loop.map((p, i) => {
       const per = D.persons.get(p.pid);
-      return per ? { id: p.pid, colour: p.colour, x: per.x, y: per.y, a: per.a } : null;
+      return per ? { id: p.pid, colour: p.colour, x: per.x, y: per.y, a: per.a, i } : null;
     }).filter(Boolean);
+  },
+  boarders() {
+    return D.flyers.map((f) => ({ colour: f.colour, x0: f.x0, y0: f.y0, t: (performance.now() - f.t0) / f.dur }));
   },
 };
 

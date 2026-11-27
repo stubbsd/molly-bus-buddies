@@ -1,6 +1,6 @@
 // Molly's Bus Buddies service worker: versioned precache, cache-first, offline navigation.
 // Bump VERSION whenever any cached file changes. Regenerate the list with: node tools/write-sw.mjs
-const VERSION = "bus-buddies-v5";
+const VERSION = "bus-buddies-v6";
 const PRECACHE = [
   "./",
   "index.html",
@@ -15,19 +15,7 @@ const PRECACHE = [
   "js/slots.js",
   "js/storage.js",
   "js/ui.js",
-  "levels/01.json",
-  "levels/02.json",
-  "levels/03.json",
-  "levels/04.json",
-  "levels/05.json",
-  "levels/06.json",
-  "levels/07.json",
-  "levels/08.json",
-  "levels/09.json",
-  "levels/10.json",
-  "levels/11.json",
-  "levels/12.json",
-  "levels/index.json",
+  "levels/campaign.json",
   "icons/apple-touch-icon.png",
   "icons/icon-192.png",
   "icons/icon-512.png",

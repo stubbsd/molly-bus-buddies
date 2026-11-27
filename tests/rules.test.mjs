@@ -84,17 +84,19 @@ test("every shipped car park: no overlaps, can be cleared, most buses start bloc
   }
 });
 
-// ---- 2. only the front of the queue boards ----
-test("only the person at the front boards: a wrong colour at the front holds everyone up", () => {
-  const level = lvl(["yellow", ...many("red", 3), "yellow", "yellow"], [bus("r1", "red", apart(0), 5, 0, 3), bus("y1", "yellow", apart(1), 5, 0, 3)]);
+// ---- 2. boarding is from the bottom pickup ----
+test("the person at the pickup boards; if they have no bus they carry on and the next person gets a turn", () => {
+  const level = lvl(["yellow", ...many("red", 4), "yellow", "yellow", "yellow"], [bus("r1", "red", apart(0)), bus("y1", "yellow", apart(1))]);
   const s = initialState(level);
   assert.equal(frontColour(s), "yellow");
   const r = applyMove(s, "r1");
-  assert.equal(r.events.filter((e) => e.type === "board").length, 0);
-  assert.equal(r.state.bays[0].filled, 0);
-  assert.deepEqual(r.state.loop, ["yellow", "red", "red", "red", "yellow", "yellow"]);
+  // yellow at the bottom has no red bus, so she goes round; the four reds hop on and r1 leaves
+  assert.deepEqual(r.events.filter((e) => e.type === "board").map((e) => e.colour), ["red", "red", "red", "red"]);
+  assert.ok(r.events.some((e) => e.type === "skip" && e.n >= 1));
+  assert.ok(r.events.some((e) => e.type === "depart" && e.busId === "r1"));
+  assert.equal(r.state.loop[0], "yellow");
   const r2 = applyMove(r.state, "y1");
-  assert.deepEqual(r2.events.filter((e) => e.type === "board").map((e) => e.colour), ["yellow", "red", "red", "red", "yellow", "yellow"]);
+  assert.deepEqual(r2.events.filter((e) => e.type === "board").map((e) => e.colour), ["yellow", "yellow", "yellow", "yellow"]);
   assert.ok(isWon(r2.state));
 });
 
@@ -107,15 +109,16 @@ test("people walk onto the circle in queue order, at most loopCapacity at once",
 
 // ---- 3. seat countdowns ----
 test("the countdown starts at capacity, drops by one per person, and the bus leaves at 0", () => {
-  const level = lvl([...many("red", 4), ...many("blue", 4), "red", "red"], [bus("r1", "red", apart(0), 5, 0, 6), bus("b1", "blue", apart(1), 5, 0, 4)]);
+  const level = lvl([...many("red", 4), ...many("blue", 4)], [bus("r1", "red", apart(0), 5, 0, 6), bus("b1", "blue", apart(1), 5, 0, 4)]);
   const r = applyMove(initialState(level), "r1");
   const bay = r.state.bays[0];
+  assert.equal(bay.id, "r1");
   assert.equal(bay.capacity, 6);
-  assert.equal(seatsLeft(bay), 2);
+  assert.equal(seatsLeft(bay), 2); // four reds hopped on; no more reds, so it stays
   const r2 = applyMove(r.state, "b1");
   assert.ok(r2.events.some((e) => e.type === "depart" && e.busId === "b1"));
-  assert.ok(r2.events.some((e) => e.type === "depart" && e.busId === "r1"));
-  assert.ok(isWon(r2.state));
+  assert.equal(r2.state.bays[0].id, "r1");
+  assert.equal(seatsLeft(r2.state.bays[0]), 2);
 });
 
 // ---- 4. mystery buses ----
@@ -144,9 +147,12 @@ test("on every shipped level, mystery buses start hidden, from level 6 on", () =
 
 // ---- 5. out of room ----
 function fiveFullBays() {
-  const level = lvl(["green", ...many("red", 20), ...many("blue", 4), ...many("green", 3)], [
+  // One red boards the first red bus; the other four sit empty. The greens and
+  // blues on the ring go all the way round without a matching bus, so the five
+  // bays stay full and the level is stuck.
+  const level = lvl(["red", ...many("green", 20), ...many("blue", 4)], [
     ...["r1", "r2", "r3", "r4", "r5"].map((id, k) => bus(id, "red", apart(k))),
-    bus("b1", "blue", apart(5)), bus("g1", "green", apart(6)),
+    bus("b1", "blue", apart(5)), bus("g1", "green", apart(6), 5, 0, 20),
   ]);
   const s = createSession(level);
   for (const id of ["r1", "r2", "r3", "r4", "r5"]) assert.equal(sessionTap(s, id).moved, true);

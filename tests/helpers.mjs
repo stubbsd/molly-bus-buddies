@@ -1,8 +1,21 @@
 import { readFileSync } from "node:fs";
 export const ROOT = new URL("../", import.meta.url);
 export const readText = (p) => readFileSync(new URL(p, ROOT), "utf8");
-export const loadLevel = (id) => JSON.parse(readText(`levels/${String(id).padStart(2, "0")}.json`));
-export const allLevels = () => JSON.parse(readText("levels/index.json")).map((e) => loadLevel(e.id));
+
+let campaign = null;
+export function loadCampaign() {
+  if (!campaign) {
+    const data = JSON.parse(readText("levels/campaign.json"));
+    campaign = Array.isArray(data) ? data : data.levels;
+  }
+  return campaign;
+}
+export const loadLevel = (id) => {
+  const l = loadCampaign().find((x) => x.id === id);
+  if (!l) throw new Error("level " + id + " missing");
+  return l;
+};
+export const allLevels = () => loadCampaign().slice();
 export function placeBus(state, bus, bayIndex, filled = 0) {
   state.parked = state.parked.filter((b) => b.id !== bus.id);
   state.tick += 1;

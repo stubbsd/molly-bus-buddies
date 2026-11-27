@@ -1,16 +1,15 @@
 #!/usr/bin/env node
-// Official solver / validator for Molly's Bus Buddies (v3 car park: buses packed in a
-// jam, blocking worked out from their real shapes in js/park.js; v2 rules otherwise:
-// only the front of the queue boards, seat countdowns, mystery buses, and losing when
-// a bus is sent out while every bay is full).
+// Official solver / validator for Molly's Bus Buddies (v3 car park: packed jam,
+// blocking from the buses' real shapes in js/park.js; v6 conveyor boarding:
+// the person at the bottom of the ring hops on if a matching bay bus has a seat,
+// otherwise they carry on round).
 //
-// Boarding is deterministic (only the front person can hop on), so a state is just:
-// which buses are still parked, what sits in the bays, and how many people have gone.
-// The search is a depth-first search with a dead-state memo and a move ordering that
-// tries "the bus the front person needs" first. Bay pressure BP is found by running
-// it with 1, 2, 3 ... bays allowed.
+// Boarding is still deterministic, but the ring can reorder as people pass the
+// pickup, so a state keeps the ring itself (not only a queue index). Search is
+// depth-first with a dead-state memo; moves try a bus the pickup person can use
+// first. Bay pressure BP is found by running it with 1, 2, 3 ... bays allowed.
 // Node standard library only. Usage:
-//   node tools/solve.mjs            # all 12 levels, writes tools/solver-report.md
+//   node tools/solve.mjs            # the whole campaign, writes tools/solver-report.md
 //   node tools/solve.mjs 5 6        # only these levels, no report written
 import { readFileSync, writeFileSync } from "node:fs";
 import { initialState, applyMove, isWon, peopleMatchSeats, queueConflicts, isUnblocked } from "../js/game.js";
@@ -20,13 +19,15 @@ import { blockerMap, peel, firstOverlap } from "../js/park.js";
 const ROOT = new URL("../", import.meta.url);
 const NODE_BUDGET = 400_000;
 
-export function loadLevel(id) {
-  return JSON.parse(readFileSync(new URL(`levels/${String(id).padStart(2, "0")}.json`, ROOT), "utf8"));
+export function loadCampaign() {
+  const data = JSON.parse(readFileSync(new URL("levels/campaign.json", ROOT), "utf8"));
+  return Array.isArray(data) ? data : data.levels;
 }
 
-export function loadCampaign() {
-  const index = JSON.parse(readFileSync(new URL("levels/index.json", ROOT), "utf8"));
-  return index.map((e) => loadLevel(e.id));
+export function loadLevel(id) {
+  const l = loadCampaign().find((x) => x.id === id);
+  if (!l) throw new Error("level " + id + " missing");
+  return l;
 }
 
 export function validateSchema(level) {
@@ -66,21 +67,40 @@ export function model(level) {
     cap: buses.map((b) => b.capacity),
     blockers: buses.map((b) => map[b.id].map((id) => idx[id])),
     queue: level.queue.map((c) => col[c]),
+    loopCap: level.loopCapacity,
   };
 }
 
-const startState = (m) => ({ parked: new Array(m.n).fill(true), bays: [], pos: 0, tick: 0 });
+function fillRing(m, s) {
+  while (s.loop.length < m.loopCap && s.qpos < m.queue.length) s.loop.push(m.queue[s.qpos++]);
+}
 
-/** Board everyone who can (front of queue only). Mutates. */
+export function startState(m) {
+  const s = { parked: new Array(m.n).fill(true), bays: [], loop: [], qpos: 0, tick: 0 };
+  fillRing(m, s);
+  return s;
+}
+
+/** Board everyone who can from the pickup, skipping those who must go back round. Mutates. */
 function settleFast(m, s) {
-  while (s.pos < m.queue.length) {
-    const c = m.queue[s.pos];
+  fillRing(m, s);
+  if (!s.loop.length) return;
+  let checked = 0;
+  while (checked < s.loop.length) {
+    const c = s.loop[0];
     let best = -1;
     for (let i = 0; i < s.bays.length; i++) if (m.colour[s.bays[i].bus] === c && (best < 0 || s.bays[i].at < s.bays[best].at)) best = i;
-    if (best < 0) return;
+    if (best < 0) {
+      s.loop.push(s.loop.shift());
+      checked++;
+      continue;
+    }
     const b = s.bays[best];
-    b.filled++; s.pos++;
+    b.filled++;
+    s.loop.shift();
     if (b.filled === m.cap[b.bus]) s.bays.splice(best, 1);
+    fillRing(m, s);
+    checked = 0;
   }
 }
 
@@ -91,7 +111,7 @@ const freeBuses = (m, s) => {
 };
 
 function move(m, s, i) {
-  const t = { parked: s.parked.slice(), bays: s.bays.map((b) => ({ ...b })), pos: s.pos, tick: s.tick + 1 };
+  const t = { parked: s.parked.slice(), bays: s.bays.map((b) => ({ ...b })), loop: s.loop.slice(), qpos: s.qpos, tick: s.tick + 1 };
   t.parked[i] = false;
   t.bays.push({ bus: i, filled: 0, at: t.tick });
   const peak = t.bays.length;
@@ -102,20 +122,20 @@ function move(m, s, i) {
 function keyFast(s) {
   let k = "";
   for (const p of s.parked) k += p ? "1" : "0";
-  return k + "|" + s.bays.map((b) => b.bus + ":" + b.filled).join(",") + "|" + s.pos;
+  return k + "|" + s.bays.map((b) => b.bus + ":" + b.filled).join(",") + "|" + s.qpos + "|" + s.loop.join("");
 }
 
-const won = (m, s) => s.pos === m.queue.length && s.bays.length === 0 && s.parked.every((p) => !p);
+const won = (m, s) => s.qpos === m.queue.length && s.loop.length === 0 && s.bays.length === 0 && s.parked.every((p) => !p);
 
-/** The next colour each bus would be needed for: lower = sooner. */
+/** Prefer a bus the person at the pickup can use, then colours still on the ring. */
 function orderMoves(m, s, free) {
-  const front = m.queue[s.pos];
-  const firstNeed = new Map();
-  for (let j = s.pos; j < m.queue.length && firstNeed.size < COLOURS.length; j++) if (!firstNeed.has(m.queue[j])) firstNeed.set(m.queue[j], j - s.pos);
-  // buses that free a bus of the front colour score a bonus
+  const pick = s.loop[0];
+  const onRing = new Set(s.loop);
   const helps = new Set();
-  for (let i = 0; i < m.n; i++) if (s.parked[i] && m.colour[i] === front) for (const j of m.blockers[i]) if (s.parked[j]) helps.add(j);
-  const score = (i) => (m.colour[i] === front ? -1000 : 0) + (helps.has(i) ? -100 : 0) + (firstNeed.get(m.colour[i]) ?? 999);
+  if (pick !== undefined) {
+    for (let i = 0; i < m.n; i++) if (s.parked[i] && m.colour[i] === pick) for (const j of m.blockers[i]) if (s.parked[j]) helps.add(j);
+  }
+  const score = (i) => (m.colour[i] === pick ? -1000 : 0) + (helps.has(i) ? -100 : 0) + (onRing.has(m.colour[i]) ? -10 : 0);
   return free.slice().sort((a, b) => score(a) - score(b));
 }
 
@@ -146,7 +166,7 @@ export function search(m, bayCap = BAY_COUNT, budget = NODE_BUDGET, from = start
 }
 
 /**
- * A careful but short-sighted player: taps a free bus the front person can board if
+ * A careful but short-sighted player: taps a free bus the person at the pickup can board if
  * there is one, otherwise any free bus, and never taps when the bays are full.
  * Returns the share of games such a player wins.
  */
@@ -161,16 +181,16 @@ export function carefulWinRate(m, trials = 400, seed = 1) {
       if (s.bays.length >= BAY_COUNT) break;
       const free = freeBuses(m, s);
       if (!free.length) break;
-      const front = m.queue[s.pos];
-      const match = free.filter((i) => m.colour[i] === front || s.bays.some((b) => m.colour[b.bus] === m.colour[i]));
-      const pool = free.filter((i) => m.colour[i] === front).length ? free.filter((i) => m.colour[i] === front) : match.length && rnd() < 0.5 ? match : free;
+      const pick = s.loop[0];
+      const match = free.filter((i) => m.colour[i] === pick || s.bays.some((b) => m.colour[b.bus] === m.colour[i]));
+      const pool = free.filter((i) => m.colour[i] === pick).length ? free.filter((i) => m.colour[i] === pick) : match.length && rnd() < 0.5 ? match : free;
       s = move(m, s, pool[Math.floor(rnd() * pool.length)]).t;
     }
   }
   return wins / trials;
 }
 
-export function analyseLevel(level) {
+export function analyseLevel(level, opts = {}) {
   const t0 = Date.now();
   const schemaErrors = validateSchema(level);
   const { layers, stuck } = peel(level.buses);
@@ -196,11 +216,13 @@ export function analyseLevel(level) {
   }
   // Openings that can no longer be won (within the budget; unknown ones are not counted)
   const badStart = [], goodStart = [];
-  const s0 = startState(m);
-  for (const i of freeBuses(m, s0)) {
-    const r = search(m, BAY_COUNT, 60_000, move(m, s0, i).t);
-    nodes += r.nodes;
-    if (r.ok) goodStart.push(m.ids[i]); else if (!r.budgetHit) badStart.push(m.ids[i]);
+  if (!opts.quick) {
+    const s0 = startState(m);
+    for (const i of freeBuses(m, s0)) {
+      const r = search(m, BAY_COUNT, 60_000, move(m, s0, i).t);
+      nodes += r.nodes;
+      if (r.ok) goodStart.push(m.ids[i]); else if (!r.budgetHit) badStart.push(m.ids[i]);
+    }
   }
   // replay the found path with the real rules engine to be sure
   let replayOk = false;
@@ -211,7 +233,7 @@ export function analyseLevel(level) {
   return {
     id: level.id, name: level.name, schemaErrors, metrics,
     solvable: main.ok && replayOk, replayOk, M: main.ok ? main.path.length : null, shortestPath: main.path, path: main.path,
-    BP, bpPath, goodStart, badStart, winRate: carefulWinRate(m), states: nodes, budgetHit, ms: Date.now() - t0,
+    BP, bpPath, goodStart, badStart, winRate: opts.quick && !opts.winGames ? null : carefulWinRate(m, opts.winGames || 400), states: nodes, budgetHit, ms: Date.now() - t0,
   };
 }
 
@@ -220,7 +242,7 @@ export function campaignProblems(results) {
   const problems = [];
   for (let i = 1; i < results.length; i++) {
     const a = results[i - 1], b = results[i];
-    if (b.metrics.B <= a.metrics.B) problems.push(`level ${b.id}: should have more buses than level ${a.id}`);
+    if (b.metrics.B < a.metrics.B) problems.push(`level ${b.id}: fewer buses than level ${a.id}`);
     if (b.metrics.blocked < a.metrics.blocked) problems.push(`level ${b.id}: fewer blocked buses than level ${a.id}`);
     if (b.metrics.C < a.metrics.C) problems.push(`level ${b.id}: fewer colours than level ${a.id}`);
     if (b.metrics.Mys < a.metrics.Mys) problems.push(`level ${b.id}: fewer mystery buses than level ${a.id}`);
@@ -230,7 +252,15 @@ export function campaignProblems(results) {
   for (const r of results) {
     if (r.id <= 5 && r.metrics.Mys > 0) problems.push(`level ${r.id}: no mystery buses before level 6`);
     if (r.id >= 6 && r.metrics.Mys === 0) problems.push(`level ${r.id}: mystery buses from level 6`);
-    if (r.id <= 2 && r.BP > 2) problems.push(`level ${r.id}: early levels must leave spare bays (BP <= 2)`);
+    if (r.id <= 2 && r.BP !== 1) problems.push(`level ${r.id}: early levels should only need one bay at a time (BP = 1)`);
+    if (r.id >= 3 && r.BP < 2) problems.push(`level ${r.id}: from level 3 the conveyor should need at least two bays at once`);
+  }
+  if (results.length >= 2) {
+    const first = results[0], last = results[results.length - 1];
+    if (last.metrics.B <= first.metrics.B) problems.push("the last level should have more buses than the first");
+    if (last.metrics.C < 6) problems.push("the last level should use all six colours");
+    if (last.metrics.Mys < 6) problems.push("the last level should have a thicket of mystery buses");
+    if ((last.BP ?? 0) < 3) problems.push("the last level should need at least three bays at once");
   }
   return problems;
 }
@@ -249,7 +279,7 @@ export function levelProblems(r) {
 
 function report(results, problems) {
   const when = new Date().toLocaleString("en-GB", { timeZone: "Europe/London", dateStyle: "long", timeStyle: "short" });
-  let md = `# Solver report\n\nGenerated by \`node tools/solve.mjs\` on ${when} (Europe/London). Rules: v3 car park (packed jam, blocking from the buses' real shapes), front-of-queue boarding, seat countdowns, mystery buses, out-of-room loss.\n\n`;
+  let md = `# Solver report\n\nGenerated by \`node tools/solve.mjs\` on ${when} (Europe/London). Rules: v3 car park (packed jam, blocking from the buses' real shapes), conveyor boarding (hop on at the bottom of the ring), seat countdowns, mystery buses, out-of-room loss.\n\n`;
   md += "B buses, Blocked = buses that cannot move at the start, D = waves needed to clear the car park, C colours, BP = fewest bays needed at once, Mys mystery buses, Q colour changes in the queue, Careful = share of games won by a careful but short-sighted player (taps a bus the front person can board when there is one, otherwise a random free bus; 400 games), Dead openings = first taps that can no longer be won.\n\n";
   md += `**Result:** ${problems.length ? "FAIL" : "PASS"} — ${results.filter((r) => r.solvable).length}/${results.length} levels solvable (each solution replayed with the real rules engine).\n\n`;
   md += "| Lv | Name | B | Blocked | D | C | People | BP | Mys | Q | Careful | Dead openings | Nodes | ms |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n";
@@ -263,7 +293,7 @@ function report(results, problems) {
       md += `- Good opening buses: ${r.goodStart.join(", ") || "none"}; dead-end openings: ${r.badStart.join(", ") || "none"}\n`;
     }
   }
-  md += "\n## Campaign rule\n\n" + (problems.length ? problems.map((p) => `- ${p}`).join("\n") : "All checks pass: every level is solvable (replayed with the real engine) and has more buses than the one before; blocked buses, colours, mystery buses and BP never drop; most buses start blocked on every level; no mystery buses before level 6 and mystery buses on every level from 6, each starting blocked; no level needs all five bays; a careful player never finds a level much easier than the one before.") + "\n";
+  md += "\n## Campaign rule\n\n" + (problems.length ? problems.map((p) => `- ${p}`).join("\n") : "All checks pass: every level is solvable (replayed with the real engine); buses, blocked buses, colours, mystery buses and BP never drop (plateaus are allowed so the 100-level campaign can rise gently); the last level has more buses than the first; most buses start blocked on every level; no mystery buses before level 6 and mystery buses on every level from 6, each starting blocked; no level needs all five bays; a careful player never finds a level much easier than the one before; the last level uses more buses, all six colours, more mystery buses, and higher bay pressure than the first.") + "\n";
   return md;
 }
 
@@ -276,10 +306,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   for (const level of levels) {
     const r = analyseLevel(level);
     results.push(r);
-    console.log(`L${String(r.id).padStart(2)} ${r.name.padEnd(22)} solvable=${r.solvable} B=${r.metrics.B} blocked=${r.metrics.blocked} D=${r.metrics.D} C=${r.metrics.C} people=${r.metrics.people} BP=${r.BP} Mys=${r.metrics.Mys} careful=${pct(r.winRate ?? 0)} dead=${r.badStart?.length}/${(r.badStart?.length ?? 0) + (r.goodStart?.length ?? 0)} nodes=${r.states} ${r.ms}ms`);
+    console.log(`L${String(r.id).padStart(3)} ${r.name.padEnd(22)} solvable=${r.solvable} B=${r.metrics.B} blocked=${r.metrics.blocked} D=${r.metrics.D} C=${r.metrics.C} people=${r.metrics.people} BP=${r.BP} Mys=${r.metrics.Mys} careful=${pct(r.winRate ?? 0)} dead=${r.badStart?.length}/${(r.badStart?.length ?? 0) + (r.goodStart?.length ?? 0)} nodes=${r.states} ${r.ms}ms`);
   }
   const problems = [...results.flatMap(levelProblems), ...(ids.length ? [] : campaignProblems(results))];
-  if (!ids.length) { writeFileSync(new URL("tools/solver-report.md", ROOT), report(results, problems)); console.log("wrote tools/solver-report.md"); }
+  if (!ids.length) {
+    writeFileSync(new URL("tools/solver-report.md", ROOT), report(results, problems));
+    const metrics = results.map((r) => ({
+      id: r.id, B: r.metrics.B, blocked: r.metrics.blocked, D: r.metrics.D, C: r.metrics.C,
+      people: r.metrics.people, BP: r.BP, Mys: r.metrics.Mys, winRate: r.winRate, path: r.path, ms: r.ms,
+    }));
+    writeFileSync(new URL("tools/campaign-metrics.json", ROOT), JSON.stringify(metrics, null, 2) + "\n");
+    console.log("wrote tools/solver-report.md and tools/campaign-metrics.json");
+  }
   if (problems.length) { console.error("PROBLEMS:\n" + problems.map((p) => "  - " + p).join("\n")); process.exit(1); }
   console.log("All checks pass.");
 }

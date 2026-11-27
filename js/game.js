@@ -1,6 +1,7 @@
-// Molly's Bus Buddies — official rules (v2: roof arrows, front-of-queue boarding,
-// seat countdowns, mystery buses, out-of-room). Pure functions, no DOM.
-// Shared by the browser game, the solver (tools/solve.mjs) and the tests.
+// Molly's Bus Buddies — official rules (v2 buses + mystery + out-of-room; v6 boarding:
+// the packed ring is a conveyor. The person at the bottom (the pickup) hops onto a
+// matching bay bus if one has a seat; if not, they carry on round and the next person
+// gets a turn. Pure functions, no DOM. Shared by the game, the solver and the tests.
 import { BAY_COUNT } from "./slots.js";
 import { blockerMap, blocks, peel } from "./park.js";
 
@@ -79,36 +80,56 @@ export function boardingBay(colour, bays) {
 }
 
 /**
- * Official deterministic settle (v2 rules). Mutates state.
- * People walk onto the circle in queue order (up to loopCapacity at once).
- * Only the person at the FRONT (loop[0]) may board: they hop onto the
- * earliest-arrived bay bus of their colour with a free seat. If there is none,
- * everybody waits. A bus whose seat countdown reaches 0 drives off.
- * Returns { events, peak }.
+ * Official deterministic settle. Mutates state.
+ * People walk onto the ring in queue order (up to loopCapacity at once).
+ * loop[0] is the person at the bottom pickup. If a bay bus of their colour
+ * has a free seat, they hop on (the earliest-arrived such bus). If not, they
+ * carry on round (move to the back of the ring) and the next person takes
+ * the pickup. After a full turn with nobody boarding, we wait for a new bus.
+ * A trailing unsuccessful lap is not emitted as events: the ring stops with
+ * the same person at the pickup. A bus whose seat countdown reaches 0 drives off.
+ * Returns { events, peak }. Events include {type:"skip", n} for people who
+ * passed the door, plus enter, board and depart.
  */
 export function settle(state) {
   const events = [];
   const cap = state.loopCapacity;
   let peak = occupiedBayCount(state);
-  for (let guard = 0; guard < 100000; guard++) {
+  let skips = 0;
+  const flushSkip = () => { if (skips) { events.push({ type: "skip", n: skips }); skips = 0; } };
+  const fill = () => {
     while (state.loop.length < cap && state.queue.length > 0) {
       const p = state.queue.shift();
       state.loop.push(p);
+      flushSkip();
       events.push({ type: "enter", colour: p });
     }
-    peak = Math.max(peak, occupiedBayCount(state));
-    if (state.loop.length === 0) return { events, peak };
+  };
+  fill();
+  peak = Math.max(peak, occupiedBayCount(state));
+  for (let guard = 0; guard < 100000; guard++) {
+    if (state.loop.length === 0) { flushSkip(); return { events, peak }; }
     const bi = boardingBay(state.loop[0], state.bays);
-    if (bi < 0) return { events, peak };
-    const colour = state.loop.shift();
-    const bay = state.bays[bi];
-    bay.filled += 1;
-    events.push({ type: "board", colour, bay: bi, busId: bay.id });
-    if (bay.filled >= bay.capacity) {
-      state.bays[bi] = null;
-      state.departed.push(bay.id);
-      events.push({ type: "depart", bay: bi, busId: bay.id, colour: bay.colour });
+    if (bi >= 0) {
+      flushSkip();
+      const colour = state.loop.shift();
+      const bay = state.bays[bi];
+      bay.filled += 1;
+      events.push({ type: "board", colour, bay: bi, busId: bay.id });
+      if (bay.filled >= bay.capacity) {
+        state.bays[bi] = null;
+        state.departed.push(bay.id);
+        events.push({ type: "depart", bay: bi, busId: bay.id, colour: bay.colour });
+      }
+      fill();
+      peak = Math.max(peak, occupiedBayCount(state));
+      continue;
     }
+    state.loop.push(state.loop.shift());
+    skips += 1;
+    // A full turn with nobody boarding: the array is back where this sweep
+    // started, so drop the unused skips and wait for a new bus.
+    if (skips >= state.loop.length) return { events, peak };
   }
   throw new Error("settle overflow");
 }
@@ -118,7 +139,7 @@ export function seatsLeft(bayBus) {
   return bayBus ? bayBus.capacity - bayBus.filled : 0;
 }
 
-/** The colour of the person at the front of the line, or null. */
+/** The colour of the person at the bottom pickup, or null. */
 export function frontColour(state) {
   return state.loop[0] ?? state.queue[0] ?? null;
 }
@@ -217,13 +238,16 @@ export function isWon(state) {
     state.parked.length === 0 && state.bays.every((b) => b === null);
 }
 
+/** True if anyone already on the ring could hop on from the pickup (after a turn). */
 export function canAnyoneBoard(state) {
-  return state.loop.length > 0 && boardingBay(state.loop[0], state.bays) >= 0;
+  for (const p of state.loop) if (boardingBay(p, state.bays) >= 0) return true;
+  return false;
 }
 
 /**
- * Stuck: not won or lost, and every bay is full while the front person has no bus.
- * (After settle, this is the only way to have no safe move: sending any other bus now loses.)
+ * Stuck: not won or lost, every bay is full, and nobody on the ring can hop on
+ * even after a full turn. (People still in the feeders cannot reach the pickup
+ * until a space frees on the ring.) Sending any other bus now loses.
  */
 export function isStuck(state) {
   if (isWon(state) || state.lost) return false;

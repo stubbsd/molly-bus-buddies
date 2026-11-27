@@ -1,12 +1,17 @@
 // On-device progress only (SPEC.md §2.5). Single localStorage key.
-// v2/v3: the levels were redesigned (v3: packed car parks). Older progress is migrated:
+// v4: boarding is from the bottom of the ring (people who cannot hop on go round). Older progress is migrated:
 // sound setting and unlocked levels are kept; a half-played v1 level is dropped
 // because its saved board no longer matches the new level.
-export const STORAGE_KEY = "mollysBusBuddies.v3";
-export const LEGACY_KEYS = ["mollysBusBuddies.v2", "mollysBusBuddies.v1"];
+export const STORAGE_KEY = "mollysBusBuddies.v4";
+export const LEGACY_KEYS = ["mollysBusBuddies.v3", "mollysBusBuddies.v2", "mollysBusBuddies.v1"];
+export const LEVEL_COUNT = 100;
 
 export function defaultProgress() {
   return { soundMuted: false, completedLevels: [], currentLevel: 1, inProgress: null };
+}
+
+function inCampaign(n) {
+  return Number.isInteger(n) && n >= 1 && n <= LEVEL_COUNT;
 }
 
 export function sanitise(raw) {
@@ -14,9 +19,9 @@ export function sanitise(raw) {
   if (!raw || typeof raw !== "object") return d;
   return {
     soundMuted: raw.soundMuted === true,
-    completedLevels: Array.isArray(raw.completedLevels) ? raw.completedLevels.filter((n) => Number.isInteger(n) && n >= 1 && n <= 12) : [],
-    currentLevel: Number.isInteger(raw.currentLevel) && raw.currentLevel >= 1 && raw.currentLevel <= 12 ? raw.currentLevel : 1,
-    inProgress: raw.inProgress && typeof raw.inProgress === "object" && Number.isInteger(raw.inProgress.levelId) && raw.inProgress.state ? raw.inProgress : null,
+    completedLevels: Array.isArray(raw.completedLevels) ? raw.completedLevels.filter(inCampaign) : [],
+    currentLevel: inCampaign(raw.currentLevel) ? raw.currentLevel : 1,
+    inProgress: raw.inProgress && typeof raw.inProgress === "object" && inCampaign(raw.inProgress.levelId) && raw.inProgress.state ? raw.inProgress : null,
   };
 }
 

@@ -53,20 +53,13 @@ export function spaces(k, n, cols) {
  * N spaces packed as tightly as possible: the smallest chevron with room, trimmed
  * from the top and bottom corners, then cropped to the buses.
  */
+// A single narrow chevron (one centre column and one leaning ladder a side)
+// trimmed to N. That shape stays interlocked, and the buses stay around 40 px
+// wide on an iPhone SE. Wider packs shrank below a usable tap target.
 export function packedSpaces(N) {
-  let best = null, bestScore = Infinity;
-  for (let k = 1; k <= 4; k++) for (let n = 2; n <= 12; n++) for (const cols of [1, 2]) {
-    if (cols === 2 && k < 3) continue;
-    const list = spaces(k, n, cols);
-    if (list.length < N) continue;
-    const xs = list.map((b) => b.x), ys = list.map((b) => b.y);
-    const w = Math.max(...xs) - Math.min(...xs) + 2.2, h = Math.max(...ys) - Math.min(...ys) + 1.8;
-    const asp = w / h;
-    // prefer little trimming and a shape like the phone's car park (about 1.4 : 1)
-    const score = (list.length - N) * 1.0 + Math.abs(Math.log(asp / 1.45)) * (N >= 20 ? 30 : 10) + (k === 1 ? 20 : 0);
-    if (score < bestScore) { bestScore = score; best = list; }
-  }
-  if (!best) throw new Error("car park too big");
+  if (N > 13) throw new Error("car park too big for a tappable bus on a phone");
+  const best = spaces(1, 5, 1);
+  if (best.length < N) throw new Error("car park too big");
   // trim the corner-most spaces, a mirror pair at a time so the jam stays symmetric
   const far = (b) => Math.hypot(b.x / 1.45, b.y);
   const sides = best.filter((b) => b.x < -1e-6).sort((a, b) => far(b) - far(a));

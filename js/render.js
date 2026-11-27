@@ -27,10 +27,10 @@ export function computeLayout(w, h, insets, level = null) {
   const landscape = w > h * 1.15 && w >= 700;
   const L = { w, h, landscape, insets };
   const compact = h < 720;
-  const ctrlH = sb + (compact ? 94 : 112);
+  const ctrlH = sb + (compact ? 88 : 112);
   if (!landscape) {
-    const grassH = Math.round(compact ? h * 0.375 : clamp(h * 0.41, 250, 540));
-    const roadH = Math.round(compact ? 76 : clamp(h * 0.115, 82, 150));
+    const grassH = Math.round(compact ? h * 0.34 : clamp(h * 0.41, 250, 540));
+    const roadH = Math.round(compact ? 70 : clamp(h * 0.115, 82, 150));
     L.grass = { x: 0, y: 0, w, h: grassH };
     L.road = { x: 0, y: grassH, w, h: roadH };
     L.carArea = { x: 0, y: grassH + roadH, w, h: h - grassH - roadH };
@@ -81,11 +81,12 @@ export function computeLayout(w, h, insets, level = null) {
   // feeders stay equally full and each colour band shows on both sides, as in the
   // reference. Index = place in the level's whole line (0 = front).
   const q = level ? level.queue : [];
+  const cap = level?.loopCapacity ?? L.ringCap;
   L.armOf = [];
   const count = [0, 0];
   for (let i = 0; i < q.length; i++) {
-    if (i < L.ringCap) { L.armOf.push(-1); continue; }
-    const arm = Math.floor((i - L.ringCap) / lanes) % 2;
+    if (i < cap) { L.armOf.push(-1); continue; }
+    const arm = Math.floor((i - cap) / lanes) % 2;
     L.armOf.push(arm); count[arm]++;
   }
   // Feeder arms. Centre line from where it meets the ring back up the side. Each arm is
@@ -139,7 +140,13 @@ export function computeLayout(w, h, insets, level = null) {
   // Car park: the level's jam scaled to fill the band (never bigger than a bay bus).
   const park = level?.park ?? { w: 10, h: 7 };
   const c = L.car;
-  const sc = Math.min(c.w / park.w, c.h / park.h, (L.bayBus.wid * 1.1) / BUS.wid);
+  const fit = Math.min(c.w / park.w, c.h / park.h);
+  const bayCap = (L.bayBus.wid * 1.1) / BUS.wid;
+  const minSc = 40 / BUS.wid; // aim for parked buses around 40 px wide when they still fit
+  // Prefer not to outsize a bay bus, but never shrink a jam below the 40 px
+  // tap target (or below the largest size that still fits the car-park band).
+  let sc = fit;
+  if (bayCap < sc) sc = Math.max(bayCap, Math.min(fit, minSc));
   L.park = { s: sc, ox: c.x + (c.w - park.w * sc) / 2, oy: c.y + (c.h - park.h * sc) / 2, w: park.w * sc, h: park.h * sc };
   L.parkBus = { len: BUS.len * sc, wid: BUS.wid * sc };
   return L;
