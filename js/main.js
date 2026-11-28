@@ -33,7 +33,7 @@ const ctx = canvas.getContext("2d");
 const D = {
   queue: [], loop: [], persons: new Map(), bays: [null, null, null, null, null],
   ghosts: [], flyers: [], events: [], nextAt: 0, shakes: new Map(), bumps: new Map(),
-  confetti: [], phase: 0, spin: 0, skip: null, resync: null, armLens: null, pendingSettle: false,
+  confetti: [], phase: 0, spin: 0, skip: null, resync: null, clock: null, armLens: null, pendingSettle: false,
 };
 
 const person = (colour) => ({ pid: ++pid, colour });
@@ -57,32 +57,60 @@ const busy = () => D.events.length > 0 || D.flyers.length > 0 || D.ghosts.some((
 // at a steady speed; people peel off at the bottom door and walk into the bus.
 const line = () => D.loop.concat(D.queue);
 
-/** Visual place of loop[i] on the ring. Travel is clockwise: the next person to
- *  board approaches the door from the right. `spin` is the conveyor offset in slots. */
-function loopTarget(i, spin = 0) {
+/** Packed home of loop[i] at spin 0: slot (slots-i), the door for i=0, then
+ *  approaching from the right. */
+function homeSlot(i) {
   const slots = L.ringSlots.length;
-  const pos = wrap((slots - i) + spin, slots);
-  const k0 = Math.floor(pos) % slots, u = pos - Math.floor(pos), k1 = (k0 + 1) % slots;
-  const a0 = ringSlot(L, k0), a1 = ringSlot(L, k1);
-  let d = a1.a - a0.a; if (d < 0) d += 360;
-  return { a: a0.a + d * u, r: a0.r + (a1.r - a0.r) * u };
+  return ringSlot(L, wrap(slots - i, slots));
 }
 
+/** Visual place of a ring person. The packed chevron is rotated as a rigid
+ *  turntable: each person keeps their own lane (constant r) and the whole
+ *  crowd turns at a constant angle rate. v7 interpolated through neighbouring
+ *  packed slots, which zigzag across the three lanes and made the ring judder
+ *  even when positions never "jumped". */
+function loopTarget(i, spin = 0, per = null) {
+  const slots = L.ringSlots.length;
+  const deg = (360 / slots) * spin;
+  if (per && per.baseA != null && per.homeR != null) return { a: per.baseA + deg, r: per.homeR };
+  const h = homeSlot(i);
+  return { a: h.a + deg, r: h.r };
+}
+
+const _targets = [];
 function lineTargets() {
   const n = [0, 0];
-  const ring = D.loop.map((p, i) => { const t = loopTarget(i, D.spin); return { mode: "l", a: t.a, r: t.r }; });
-  const feed = D.queue.map((p, i) => {
+  _targets.length = 0;
+  for (let i = 0; i < D.loop.length; i++) {
+    const p = D.loop[i];
+    const t = loopTarget(i, D.spin, D.persons.get(p.pid));
+    _targets.push({ mode: "l", a: t.a, r: t.r });
+  }
+  for (let i = 0; i < D.queue.length; i++) {
+    const p = D.queue[i];
     const per = D.persons.get(p.pid);
     const arm = per?.arm ?? (Math.floor(i / 3) % 2);
     const q = queuePoint(L, arm, n[arm]++);
-    return { mode: "q", x: q.x, y: q.y, arm };
-  });
-  return ring.concat(feed);
+    _targets.push({ mode: "q", x: q.x, y: q.y, arm });
+  }
+  return _targets;
 }
 
-function placeNow(per, t) {
+function placeNow(per, t, i = 0) {
   per.mode = t.mode;
-  if (t.mode === "l") { per.a = t.a; per.r = t.r; Object.assign(per, loopXY(L, per.a, per.r)); } else { per.x = t.x; per.y = t.y; }
+  if (t.mode === "l") {
+    const slots = L.ringSlots.length;
+    if (per.baseA == null || per.homeR == null) {
+      const h = homeSlot(i);
+      per.baseA = h.a - D.spin * (360 / slots);
+      per.homeR = h.r;
+    }
+    const pose = loopTarget(i, D.spin, per);
+    per.a = pose.a; per.r = pose.r;
+    const xy = loopXY(L, per.a, per.r);
+    per.x = xy.x; per.y = xy.y;
+    per.glued = true;
+  } else { per.x = t.x; per.y = t.y; per.glued = false; }
 }
 
 function rebuildDisplay() {
@@ -92,8 +120,8 @@ function rebuildDisplay() {
   D.persons = new Map();
   const all = line();
   lineTargets().forEach((t, i) => {
-    const per = { mode: t.mode, x: 0, y: 0, a: 0, r: 0, arm: t.arm, merging: false };
-    placeNow(per, t);
+    const per = { mode: t.mode, x: 0, y: 0, a: 0, r: 0, arm: t.arm, merging: false, baseA: null, homeR: null, glued: false };
+    placeNow(per, t, i);
     if (t.mode === "q") per.arm = t.arm;
     D.persons.set(all[i].pid, per);
   });
@@ -104,12 +132,17 @@ function rebuildDisplay() {
     if (per && per.arm == null) per.arm = Math.floor(i / 3) % 2;
   });
   D.bays = s.bays.map((b) => (b ? { id: b.id, colour: b.colour, capacity: b.capacity, filled: b.filled, pending: 0 } : null));
-  D.ghosts = []; D.flyers = []; D.events = []; D.pendingSettle = false; D.spin = 0; D.skip = null; D.resync = null; D.armLens = null;
+  D.ghosts = []; D.flyers = []; D.events = []; D.pendingSettle = false; D.spin = 0; D.skip = null; D.resync = null; D.armLens = null; D.clock = null;
 }
 
 function snapPositions() {
   const all = line();
-  lineTargets().forEach((t, i) => placeNow(D.persons.get(all[i].pid), t));
+  lineTargets().forEach((t, i) => {
+    const per = D.persons.get(all[i].pid);
+    if (!per) return;
+    if (t.mode === "l") { per.baseA = null; per.homeR = null; per.glued = false; }
+    placeNow(per, t, i);
+  });
 }
 
 // ---------------- layout / resize ----------------
@@ -175,6 +208,7 @@ function frame(now) {
   frameDts.push(raw);
   if (!session || $("screen-game").hidden) return;
   step(now, dt);
+  if (D.captureTick) D.captureTick(now);
   draw(now);
 }
 
@@ -248,20 +282,39 @@ function movePeople(dt) {
       per.x += dx * s; per.y += dy * s;
       return;
     }
-    // People already on the ring stay glued to the conveyor once they have
-    // caught their slot. Until then they walk along the ring at a capped
-    // speed, so a merge from the side never snaps across the grass.
+    // People already on the ring ride the turntable once they have reached
+    // their packed slot. Until then they walk along the ring — the same
+    // even glide as a feeder — and never chord across the grass.
     if (t.mode === "l" && per.mode === "l" && !per.merging) {
+      if (per.baseA == null || per.homeR == null) {
+        const slots = L.ringSlots.length;
+        const h = homeSlot(i);
+        per.baseA = h.a - D.spin * (360 / slots);
+        per.homeR = h.r;
+        t.a = per.baseA + D.spin * (360 / slots);
+        t.r = per.homeR;
+      }
+      // Once on the turntable, stay on the clock even if a long frame
+      // would have missed a closeness test (that chase looked like judder).
+      if (per.glued) {
+        per.a = t.a; per.r = t.r;
+        const xy = loopXY(L, per.a, per.r);
+        per.x = xy.x; per.y = xy.y;
+        return;
+      }
       const delta0 = ((((t.a - per.a) % 360) + 540) % 360) - 180;
       if (Math.abs(delta0) <= maxDeg + 0.5 && Math.abs(t.r - per.r) <= maxPx + 2) {
+        per.glued = true;
         per.a = t.a; per.r = t.r;
-        Object.assign(per, loopXY(L, per.a, per.r));
+        const xy = loopXY(L, per.a, per.r);
+        per.x = xy.x; per.y = xy.y;
         return;
       }
       per.a += Math.sign(delta0 || 0) * Math.min(Math.abs(delta0), maxDeg);
       const dr0 = t.r - per.r;
       per.r += Math.sign(dr0 || 0) * Math.min(Math.abs(dr0), maxPx);
-      Object.assign(per, loopXY(L, per.a, per.r));
+      const xy = loopXY(L, per.a, per.r);
+      per.x = xy.x; per.y = xy.y;
       return;
     }
     // Newly entered people walk to their own arm's join first, then step onto
@@ -271,6 +324,7 @@ function movePeople(dt) {
       const dJ = Math.hypot(per.x - join.x, per.y - join.y);
       if (!RM() && dJ > L.br * 1.8) {
         per.merging = true;
+        per.glued = false;
         const dx = join.x - per.x, dy = join.y - per.y, d = Math.hypot(dx, dy);
         const s = d <= maxPx ? 1 : maxPx / (d || 1);
         per.x += dx * s; per.y += dy * s;
@@ -280,41 +334,48 @@ function movePeople(dt) {
       per.mode = "l";
       per.a = (Math.atan2(per.y - L.island.cy, per.x - L.island.cx) * 180) / Math.PI;
       per.r = Math.hypot(per.y - L.island.cy, per.x - L.island.cx);
+      // Take the packed home for this index, then catch it along the ring.
+      const slots = L.ringSlots.length;
+      const h = homeSlot(i);
+      per.baseA = h.a - D.spin * (360 / slots);
+      per.homeR = h.r;
     }
     const delta = ((((t.a - per.a) % 360) + 540) % 360) - 180;
     per.a += Math.sign(delta || 0) * Math.min(Math.abs(delta), maxDeg);
     const dr = t.r - per.r;
     per.r += Math.sign(dr || 0) * Math.min(Math.abs(dr), maxPx);
-    Object.assign(per, loopXY(L, per.a, per.r));
+    const xy = loopXY(L, per.a, per.r);
+    per.x = xy.x; per.y = xy.y;
   });
+}
+
+function spinClockClear() { D.clock = null; }
+function spinAt(now) {
+  const omega = conveyorOmega(); // slots / second
+  if (!D.clock) D.clock = { t0: now, spin0: D.spin };
+  return D.clock.spin0 + ((now - D.clock.t0) / 1000) * omega;
 }
 
 function step(now, dt) {
   const speed = RM() ? 0.15 : 1;
   const slots = slotsOf();
-  let omega = conveyorOmega();
+  const ev0 = D.events[0];
+  // Hold loop[0] at the door while their bus is still pulling in, so the ring
+  // does not carry them past it and wait a whole lap.
+  const hold = !RM() && !D.resync && ev0?.type === "board" && D.loop[0] && nearDoor(D.loop[0])
+    && D.ghosts.some((g) => g.kind === "toBay" && g.bay === ev0.bay);
   if (D.resync) {
-    if (RM() || D.resync.dur <= 0) { D.spin = 0; D.resync = null; }
+    if (RM() || D.resync.dur <= 0) { D.spin = D.resync.to ?? 0; D.resync = null; spinClockClear(); }
     else {
       const u = Math.min(1, (now - D.resync.t0) / D.resync.dur);
       D.spin = D.resync.from + (D.resync.to - D.resync.from) * u;
-      if (u >= 1) { D.spin = 0; D.resync = null; }
+      if (u >= 1) { D.spin = D.resync.to; D.resync = null; spinClockClear(); }
     }
-    omega = 0;
+  } else if (RM() || hold) {
+    spinClockClear();
+  } else {
+    D.spin = spinAt(now);
   }
-  // Tight stream: when the next boarder is still a slot away, ease them to the
-  // door a little faster so a run of boarders looks like the reference pour.
-  if (!RM() && !D.resync && D.events[0]?.type === "board" && D.loop[0] && !nearDoor(D.loop[0])) {
-    omega *= 1.6;
-  }
-  // Hold loop[0] at the door while their bus is still pulling in, so the ring
-  // does not carry them past it and wait a whole lap.
-  const ev0 = D.events[0];
-  if (!RM() && !D.resync && ev0?.type === "board" && D.loop[0] && nearDoor(D.loop[0])
-      && D.ghosts.some((g) => g.kind === "toBay" && g.bay === ev0.bay)) {
-    omega = 0;
-  }
-  if (omega > 0) D.spin += omega * dt;
 
   // Play settle events against the moving conveyor. Skips are just continued
   // rotation; reduced motion snaps the array so boarding still works.
@@ -329,7 +390,7 @@ function step(now, dt) {
         if (!D.skip) D.skip = { n: e.n, start: D.spin };
         if (D.spin < D.skip.start + e.n) break;
         for (let i = 0; i < e.n; i++) D.loop.push(D.loop.shift());
-        D.spin -= e.n; D.skip = null; D.nextAt = now;
+        D.skip = null; D.nextAt = now;
       }
     } else if (e.type === "enter") {
       if (D.queue.length) {
@@ -348,7 +409,6 @@ function step(now, dt) {
       const pose = { x: per.x, y: per.y };
       D.flyers.push({ pid: p.pid, colour: p.colour, x0: pose.x, y0: pose.y, x: pose.x, y: pose.y, t0: now, dur: T.hop * speed, bay: e.bay });
       D.bays[e.bay].pending++;
-      D.spin -= 1; // keep everyone else where they are; the gap closes at the door
       D.nextAt = now + T.boardGap * speed;
     } else if (e.type === "depart") {
       if (arriving || D.flyers.some((f) => f.bay === e.bay)) break;
@@ -359,9 +419,15 @@ function step(now, dt) {
     }
     D.events.shift();
   }
-  if (!D.events.length && !D.skip) {
-    while (D.spin >= slots) D.spin -= slots;
-    while (D.spin < 0) D.spin += slots;
+  if (!D.events.length && !D.skip && !D.resync) {
+    while (D.spin >= slots) {
+      D.spin -= slots;
+      if (D.clock) D.clock.spin0 -= slots;
+    }
+    while (D.spin < 0) {
+      D.spin += slots;
+      if (D.clock) D.clock.spin0 += slots;
+    }
   }
 
   for (const f of D.flyers) {
@@ -542,16 +608,15 @@ function tapBus(id) {
   D.events.push(...r.events);
   D.nextAt = now;
   D.pendingSettle = true;
-  // Bring loop[0] back to the door at the same visual speed as the conveyor.
-  // If they have only just left the door, rewind the short way; otherwise keep
-  // turning forwards. Never whirl (a fast catch-up looked like a flash).
+  // Keep turning forwards at the same speed until loop[0] is back at the door.
+  // No rewind and no speed-up: a direction change was itself a kind of judder.
   const sl = L.ringSlots.length;
   const s = wrap(D.spin, sl);
+  spinClockClear();
   if (!RM() && s > 0.08) {
-    const back = s < sl * 0.35;
-    const rem = back ? s : sl - s;
+    const rem = sl - s;
     const natural = rem / (sl / (T.lap / 1000)) * 1000;
-    D.resync = { from: D.spin, to: D.spin + (back ? -rem : rem), t0: now, dur: Math.max(40, natural) };
+    D.resync = { from: D.spin, to: D.spin + rem, t0: now, dur: Math.max(40, natural) };
   } else D.spin = D.spin - s;
   updateUndo();
   save();
@@ -690,6 +755,8 @@ window.__busBuddies = {
   get busy() { return busy(); },
   get phase() { return D.spin; },
   get door() { return L && { x: L.door.x, y: L.door.y }; },
+  get island() { return L && { cx: L.island.cx, cy: L.island.cy }; },
+  get busSize() { return L && { parkWid: L.parkBus.wid, parkLen: L.parkBus.len, bayWid: L.bayBus.wid }; },
   ringPeople() {
     if (!session || !L) return [];
     return D.loop.map((p, i) => {
@@ -710,7 +777,7 @@ window.__busBuddies = {
     const out = [];
     for (const p of D.loop) {
       const per = D.persons.get(p.pid);
-      if (per) out.push({ id: p.pid, colour: p.colour, x: per.x, y: per.y, role: per.merging ? "merge" : "ring" });
+      if (per) out.push({ id: p.pid, colour: p.colour, x: per.x, y: per.y, a: per.a, r: per.r, role: per.merging ? "merge" : "ring" });
     }
     for (const p of D.queue) {
       const per = D.persons.get(p.pid);
@@ -727,13 +794,13 @@ window.__busBuddies = {
     return new Promise((resolve) => {
       const out = [];
       const t0 = performance.now();
-      const tick = (now) => {
-        const people = window.__busBuddies.people().map((p) => ({ id: p.id, role: p.role, x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, colour: p.colour }));
+      // Sample from the game loop, not a second rAF: under CPU throttle a
+      // second loop was reading stale poses and invented a false judder.
+      D.captureTick = (now) => {
+        const people = window.__busBuddies.people().map((p) => ({ id: p.id, role: p.role, x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, a: p.a, colour: p.colour }));
         out.push({ t: now, people, phase: D.spin, busy: busy(), flyers: D.flyers.length });
-        if (now - t0 < ms) requestAnimationFrame(tick);
-        else resolve(out);
+        if (now - t0 >= ms) { D.captureTick = null; resolve(out); }
       };
-      requestAnimationFrame(tick);
     });
   },
 };

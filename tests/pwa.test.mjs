@@ -18,7 +18,7 @@ test("manifest has name, start_url, standalone display and 192/512 icons", () =>
 
 test("sw.js has a versioned cache and precaches every local asset", () => {
   const sw = readText("sw.js");
-  assert.match(sw, /const VERSION = "bus-buddies-v7";/);
+  assert.match(sw, /const VERSION = "bus-buddies-v8";/);
   const list = JSON.parse(sw.match(/const PRECACHE = (\[[\s\S]*?\]);/)[1].replace(/,\s*\]/, "]"));
   for (const f of ["index.html", "styles.css", "manifest.webmanifest", "icons/apple-touch-icon.png", ...files("js"), ...files("levels"), ...files("icons"), ...files("audio")]) {
     assert.ok(list.includes(f), "precache missing " + f);

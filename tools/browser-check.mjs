@@ -56,9 +56,9 @@ c.on((m) => {
 });
 await c.send("Page.enable"); await c.send("Runtime.enable"); await c.send("Log.enable");
 const evaluate = async (expr) => (await c.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true })).result.value;
-async function go(url, w, h) {
-  phase = url + " " + w + "x" + h;
-  await c.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 2, mobile: w < 1300 });
+async function go(url, w, h, dsf = 2) {
+  phase = url + " " + w + "x" + h + " dsf=" + dsf;
+  await c.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: dsf, mobile: w < 1300 });
   await c.send("Page.navigate", { url });
   for (let i = 0; i < 50; i++) { await sleep(150); if (await evaluate("document.readyState === 'complete' && !!window.__busBuddies")) break; }
   await sleep(500);
@@ -144,6 +144,23 @@ function motionStats(samples, door, label) {
   const avg = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
   const max = (a) => (a.length ? Math.max(...a) : 0);
   const fts = dts.slice().sort((a, b) => a - b);
+  const omegas = [];
+  for (let i = 1; i < samples.length; i++) {
+    const dt = Math.max(0.001, (samples[i].t - samples[i - 1].t) / 1000);
+    const prev = new Map(samples[i - 1].people.map((p) => [p.id, p]));
+    for (const p of samples[i].people) {
+      if (p.role !== "ring" || p.a == null) continue;
+      const q = prev.get(p.id);
+      if (!q || q.a == null) continue;
+      let d = p.a - q.a;
+      d = ((d + 180) % 360 + 360) % 360 - 180;
+      omegas.push(d / dt);
+    }
+  }
+  const meanW = avg(omegas);
+  const varW = omegas.length ? omegas.reduce((s, x) => s + (x - meanW) ** 2, 0) / omegas.length : 0;
+  const sdW = Math.sqrt(varW);
+  const ang = { n: omegas.length, meanDegS: Math.round(meanW * 100) / 100, sd: Math.round(sdW * 100) / 100, cv: meanW ? Math.round((sdW / Math.abs(meanW)) * 1000) / 1000 : 0 };
   return {
     label,
     frames: samples.length,
@@ -160,6 +177,7 @@ function motionStats(samples, door, label) {
     maxFlyers: Math.max(0, ...samples.map((s) => s.flyers || 0)),
     nearestBoarderToDoor: boardStarts.length ? Math.min(...boardStarts.map((b) => b.fromDoor)) : null,
     frameMs: fts.length ? { n: fts.length, median: Math.round(pct(fts, 0.5)), p95: Math.round(pct(fts, 0.95)), over50: fts.filter((x) => x > 50).length } : null,
+    ang,
   };
 }
 
@@ -195,6 +213,18 @@ async function recordShots(tag, n, interval) {
   }
 }
 
+async function waitForBoarders(ms = 9000) {
+  // Forward-only resync can take most of a 7.5s lap when the door person has
+  // just moved on. Wait for the first boarder before sampling the stream.
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const n = await evaluate("(window.__busBuddies.boarders() || []).length");
+    if (n > 0) return n;
+    await sleep(80);
+  }
+  throw new Error("no boarders appeared within " + ms + "ms");
+}
+
 async function tapAndConfirm(id) {
   let info = null;
   for (let i = 0; i < 25; i++) {
@@ -220,10 +250,12 @@ async function runMotionChecks() {
   if (MOTION_DIR) { await go(BASE + "?level=1", 390, 844); await sleep(200); await recordShots("iphone-idle", 8, 160); }
   await go(BASE + "?level=1", 390, 844); await sleep(120);
   await tapAndConfirm(first);
+  await waitForBoarders();
   reports.push((await recordMotion("iphone-board", 4500)).stats);
   if (MOTION_DIR) {
     await go(BASE + "?level=1", 390, 844); await sleep(120);
     await tapAndConfirm(first);
+    await waitForBoarders();
     await recordShots("iphone-board", 16, 140);
   }
   await go(BASE + "?level=1", 820, 1180); await sleep(200);
@@ -231,19 +263,23 @@ async function runMotionChecks() {
   if (MOTION_DIR) { await go(BASE + "?level=1", 820, 1180); await sleep(200); await recordShots("ipad-idle", 8, 160); }
   await go(BASE + "?level=1", 820, 1180); await sleep(120);
   await tapAndConfirm(first);
+  await waitForBoarders();
   reports.push((await recordMotion("ipad-board", 4500)).stats);
   if (MOTION_DIR) {
     await go(BASE + "?level=1", 820, 1180); await sleep(120);
     await tapAndConfirm(first);
+    await waitForBoarders();
     await recordShots("ipad-board", 16, 140);
   }
   const path8 = analyseLevel(readLevel(8)).shortestPath;
   await go(BASE + "?level=8", 390, 844); await sleep(150);
   await tapAndConfirm(path8[0]);
+  await waitForBoarders();
   reports.push((await recordMotion("iphone-l8-merge", 4500)).stats);
   if (MOTION_DIR) {
     await go(BASE + "?level=8", 390, 844); await sleep(150);
     await tapAndConfirm(path8[0]);
+    await waitForBoarders();
     await recordShots("iphone-l8-merge", 16, 140);
   }
   for (const r of reports) {
@@ -255,6 +291,41 @@ async function runMotionChecks() {
     throw new Error("motion check failed: " + failed.map((r) => r.label + " jumps=" + r.jumpCount + " births=" + r.badBirths.length + " deaths=" + r.badDeaths.length + " moving=" + r.moving + " boarders=" + r.boardersSeen).join("; "));
   }
   return reports;
+}
+
+async function runSmoothnessMeasures() {
+  const reports = [];
+  const jobs = [
+    { tag: "iphone-dsf3-cpu1", w: 390, h: 844, dsf: 3, cpu: 1 },
+    { tag: "iphone-dsf3-cpu6", w: 390, h: 844, dsf: 3, cpu: 6 },
+    { tag: "ipad-dsf2-cpu1", w: 820, h: 1180, dsf: 2, cpu: 1 },
+    { tag: "ipad-dsf2-cpu4", w: 820, h: 1180, dsf: 2, cpu: 4 },
+  ];
+  for (const j of jobs) {
+    await c.send("Emulation.setCPUThrottlingRate", { rate: j.cpu });
+    await go(BASE + "?level=1", j.w, j.h, j.dsf);
+    await sleep(200);
+    const bus = await evaluate("window.__busBuddies.busSize");
+    const rec = await recordMotion(j.tag, 1500);
+    rec.stats.cpu = j.cpu;
+    rec.stats.dsf = j.dsf;
+    rec.stats.bus = bus;
+    reports.push(rec.stats);
+  }
+  await c.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+  const bad = reports.filter((r) => !r.ang || r.ang.cv > 0.12);
+  if (bad.length) throw new Error("ring angular speed was not steady: " + bad.map((r) => r.label + " cv=" + r.ang?.cv + " meanW=" + r.ang?.meanDegS).join("; "));
+  const skinny = reports.filter((r) => r.bus && r.bus.parkWid < 38);
+  if (skinny.length) throw new Error("parked buses smaller than 38px: " + skinny.map((r) => r.label + " " + r.bus.parkWid).join("; "));
+  return reports;
+}
+
+if (process.env.MEASURE_ONLY) {
+  phase = "smoothness-measure";
+  const reports = await runSmoothnessMeasures();
+  console.log("smoothness measures:", reports.map((r) => r.label + " cv=" + (r.ang && r.ang.cv) + " meanW=" + (r.ang && r.ang.meanDegS) + " p95=" + (r.frameMs && r.frameMs.p95) + " over50=" + (r.frameMs && r.frameMs.over50) + " busWid=" + (r.bus && Math.round(r.bus.parkWid * 10) / 10)).join("; "));
+  c.close(); chrome.kill();
+  process.exit(0);
 }
 
 if (process.env.MOTION_ONLY) {
@@ -395,7 +466,11 @@ await shot("13-iphone-level-picker.png");
 // Motion smoothness: 30+ frames at ~33 ms on iPhone and iPad (idle spin, boarding, feeder merge).
 phase = "motion-check";
 const motionReports = await runMotionChecks();
-console.log("motion checks passed:", motionReports.map((r) => r.label + " maxJump=" + r.maxJump + " avgStep33=" + r.avgRingStep33 + " frameP95=" + (r.frameMs && r.frameMs.p95)).join("; "));
+console.log("motion checks passed:", motionReports.map((r) => r.label + " maxJump=" + r.maxJump + " avgStep33=" + r.avgRingStep33 + " cv=" + (r.ang && r.ang.cv) + " boarders=" + r.boardersSeen + " frameP95=" + (r.frameMs && r.frameMs.p95)).join("; "));
+
+phase = "smoothness-measure";
+const smoothReports = await runSmoothnessMeasures();
+console.log("smoothness measures:", smoothReports.map((r) => r.label + " cv=" + (r.ang && r.ang.cv) + " meanW=" + (r.ang && r.ang.meanDegS) + " p95=" + (r.frameMs && r.frameMs.p95) + " over50=" + (r.frameMs && r.frameMs.over50) + " busWid=" + (r.bus && Math.round(r.bus.parkWid * 10) / 10)).join("; "));
 
 // Offline check: SW should be controlling by now.
 const swState = await evaluate("navigator.serviceWorker.ready.then(r => r.active && r.active.state)");
