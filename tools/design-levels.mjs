@@ -26,12 +26,14 @@ export function targetFor(id) {
   const caps = id <= 25 ? [8, 10] : id <= 60 ? [6, 8, 10] : [4, 6, 8, 10];
   const free = 0.49;
   const hold = id <= 2 ? 0 : +(0.22 + t * 0.38).toFixed(3);
-  const bp = id <= 2 ? [1] : id <= 40 ? [2] : id <= 75 ? [2, 3] : [3, 4];
+  const bp = id <= 2 ? [1] : id <= 27 ? [2] : [3];
+  // One bay is always spare (BP + 1, at least 3), so several buses can be out at once.
+  const bays = Math.max(3, bp[0] + 1);
   const win = +(0.95 - t * 0.50).toFixed(2);
-  return { B, C, mys, caps, free, hold, bp, win };
+  return { B, C, mys, caps, free, hold, bp, win, bays };
 }
 
-function rng(seed) {
+export function rng(seed) {
   let s = seed >>> 0;
   return () => { s = (s + 0x6D2B79F5) >>> 0; let x = s; x = Math.imul(x ^ (x >>> 15), x | 1); x ^= x + Math.imul(x ^ (x >>> 7), x | 61); return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
 }
@@ -73,7 +75,7 @@ function buildQueue(buses, T, r) {
   return queue;
 }
 
-function candidate(T, r) {
+export function candidate(T, r) {
   const p = pack(T.B);
   const arr = chooseArrows(p.list, r, { maxFreeFrac: T.free, minDepth: 2, caps: T.caps }, 600);
   if (!arr) return null;
@@ -95,7 +97,7 @@ function candidate(T, r) {
   return { park: { w: p.w, h: p.h }, queue, buses };
 }
 
-function stageMinBP(id) { return id <= 2 ? 1 : id <= 75 ? 2 : 3; }
+function stageMinBP(id) { return id <= 2 ? 1 : id <= 27 ? 2 : 3; }
 
 function passesPrev(res, prev, T, id, relax = false) {
   if (res.BP < stageMinBP(id)) return false;
@@ -117,7 +119,7 @@ export function design(id, names, prev = null, tries = 48) {
     const r = rng(id * 7919 + seed * 104729);
     const c = candidate(T, r);
     if (!c) continue;
-    const level = { id, name: names[id], loopCapacity: 48, park: c.park, queue: c.queue, buses: c.buses };
+    const level = { id, name: names[id], bays: T.bays, loopCapacity: 48, park: c.park, queue: c.queue, buses: c.buses };
     const res = analyseLevel(level, { quick: true, winGames: 200 });
     const probs = levelProblems(res);
     if (process.env.DEBUG) console.log(id, seed, probs.join("; ") || "ok", "BP", res.BP, "careful", res.winRate, res.ms + "ms");
@@ -148,7 +150,7 @@ function writeCampaign(levels, metrics) {
 function compactRes(res, seed) {
   return {
     id: res.id, seed,
-    B: res.metrics.B, blocked: res.metrics.blocked, D: res.metrics.D, C: res.metrics.C,
+    bays: res.metrics.bays, B: res.metrics.B, blocked: res.metrics.blocked, D: res.metrics.D, C: res.metrics.C,
     people: res.metrics.people, BP: res.BP, Mys: res.metrics.Mys,
     winRate: res.winRate, path: res.path, ms: res.ms,
   };
@@ -177,14 +179,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       const earlier = levels.find((l) => l.id === id - 1);
       if (earlier) prev = analyseLevel(earlier, { quick: true, winGames: 200 });
     }
-    let d = design(id, names, prev, 80);
-    if (!d) d = design(id, names, { ...(prev || {}), _relax: true }, 160);
+    const tries = Number(process.env.TRIES) || 80;
+    let d = design(id, names, prev, tries);
+    if (!d) d = design(id, names, { ...(prev || {}), _relax: true }, tries * 2);
     if (!d) {
       const src = levels.find((l) => l.id === id - 1) || levels[levels.length - 1];
       if (!src) { console.log(`L${id}: no design found`); process.exitCode = 1; continue; }
       const level = JSON.parse(JSON.stringify(src));
       level.id = id;
       level.name = names[id];
+      level.bays = targetFor(id).bays;
       const res = analyseLevel(level, { quick: true, winGames: 200 });
       d = { level, res, seed: "plateau-" + src.id, score: 0 };
     }

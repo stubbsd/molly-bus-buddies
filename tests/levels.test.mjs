@@ -70,7 +70,7 @@ test("official solutions replay with the real engine, and difficulty only rises"
     assert.ok(isWon(st), "replay wins level " + l.id);
     return {
       id: l.id, name: l.name, schemaErrors: [],
-      metrics: { B: m.B, blocked: m.blocked, D: m.D, C: m.C, Mys: m.Mys, people: m.people },
+      metrics: { bays: m.bays, B: m.B, blocked: m.blocked, D: m.D, C: m.C, Mys: m.Mys, people: m.people },
       solvable: true, replayOk: true, M: m.path.length, BP: m.BP, winRate: m.winRate,
       budgetHit: false,
     };

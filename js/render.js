@@ -130,11 +130,16 @@ export function computeLayout(w, h, insets, level = null) {
   const bayW = Math.min(usable / 5 - 12, 84);
   const bayH = Math.min((rd.h - (landscape ? insets.bottom : 0)) * 0.8, bayW * 1.55);
   const gap = (usable - bayW * 5) / 5;
+  // Five places along the road. A level opens the first few (its bay count);
+  // the rest are drawn faint and closed, like the reference's unused slots.
+  const openBays = Number.isInteger(level?.bays) ? Math.max(2, Math.min(5, level.bays)) : 5;
   L.bays = [];
+  L.closedBays = [];
   for (let i = 0; i < 5; i++) {
     const x = rd.x + 12 + gap / 2 + i * (bayW + gap);
     const y = rd.y + ((rd.h - (landscape ? insets.bottom : 0)) - bayH) / 2;
-    L.bays.push({ x, y, w: bayW, h: bayH, cx: x + bayW / 2, cy: y + bayH / 2 });
+    const slot = { x, y, w: bayW, h: bayH, cx: x + bayW / 2, cy: y + bayH / 2 };
+    (i < openBays ? L.bays : L.closedBays).push(slot);
   }
   L.bayBus = { len: bayH * 0.84, wid: Math.min(bayW * 0.6, bayH * 0.42) };
   // Car park: the level's jam scaled to fill the band (never bigger than a bay bus).
@@ -483,6 +488,12 @@ export function drawBackground(ctx, L, armLens = null) {
   ctx.fillStyle = "#ffffff"; ctx.fillRect(rd.x, rd.y - 4, rd.w, rd.h + 8);
   ctx.fillStyle = P.road; ctx.fillRect(rd.x, rd.y, rd.w, rd.h);
   ctx.fillStyle = "rgba(255,255,255,.18)"; ctx.fillRect(rd.x, rd.y + 3, rd.w, 2);
+  for (const b of L.closedBays || []) {
+    ctx.save();
+    ctx.globalAlpha = 0.5; ctx.lineWidth = 2; ctx.strokeStyle = "rgba(255,255,255,.55)"; ctx.setLineDash([6, 6]);
+    roundRect(ctx, b.x, b.y, b.w, b.h, 10); ctx.stroke();
+    ctx.restore();
+  }
   for (const b of L.bays) {
     ctx.fillStyle = "rgba(0,0,0,.08)"; roundRect(ctx, b.x + 2, b.y + 3, b.w, b.h, 10); ctx.fill();
     ctx.fillStyle = P.bay; roundRect(ctx, b.x, b.y, b.w, b.h, 10); ctx.fill();

@@ -2,4 +2,5 @@
 // buses and js/park.js works out blocking from their real shapes.)
 export const COLOURS = Object.freeze(["red", "yellow", "blue", "green", "purple", "pink"]);
 export const CAPACITIES = Object.freeze([4, 6, 8, 10]);
-export const BAY_COUNT = 5;
+export const BAY_COUNT = 5; // most bays any level has
+export const MIN_BAYS = 2; // fewest bays any level has

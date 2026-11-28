@@ -2,7 +2,7 @@
 // the packed ring is a conveyor. The person at the bottom (the pickup) hops onto a
 // matching bay bus if one has a seat; if not, they carry on round and the next person
 // gets a turn. Pure functions, no DOM. Shared by the game, the solver and the tests.
-import { BAY_COUNT } from "./slots.js";
+import { BAY_COUNT, MIN_BAYS } from "./slots.js";
 import { blockerMap, blocks, peel } from "./park.js";
 
 // ---------- level helpers ----------
@@ -144,6 +144,12 @@ export function frontColour(state) {
   return state.loop[0] ?? state.queue[0] ?? null;
 }
 
+/** How many loading bays a level has (2 to 5; older data without a count gets all five). */
+export function bayCountOf(level) {
+  const n = level?.bays;
+  return Number.isInteger(n) && n >= MIN_BAYS && n <= BAY_COUNT ? n : BAY_COUNT;
+}
+
 export function initialState(level) {
   const state = {
     loopCapacity: level.loopCapacity,
@@ -151,7 +157,7 @@ export function initialState(level) {
     queue: level.queue.slice(),
     loop: [],
     parked: parkedFromLevel(level),
-    bays: new Array(BAY_COUNT).fill(null),
+    bays: new Array(bayCountOf(level)).fill(null),
     departed: [],
     lost: null,
   };
@@ -274,10 +280,13 @@ export function sameState(a, b) {
 // ---------- game session with undo (used by the UI and tests) ----------
 
 export function createSession(level, saved) {
+  // A save made with a different number of bays (an older version of the game)
+  // cannot be replayed on this level, so that level starts afresh.
+  const fits = saved?.state && Array.isArray(saved.state.bays) && saved.state.bays.length === bayCountOf(level);
   const s = {
     level,
-    state: saved?.state ? clone(saved.state) : initialState(level),
-    undoStack: saved?.undoStack ? saved.undoStack.map(clone) : [],
+    state: fits ? clone(saved.state) : initialState(level),
+    undoStack: fits && saved.undoStack ? saved.undoStack.map(clone) : [],
   };
   return s;
 }
@@ -294,6 +303,62 @@ export function sessionTap(session, busId) {
   session.undoStack.push(before);
   session.state = r.state;
   return { moved: true, bay: r.bay, events: r.events, lost: r.lost, before };
+}
+
+/**
+ * Replay one settle event on a state, so the screen can work out exactly where the
+ * game is "right now" while earlier events are still being shown.
+ */
+export function applyEvent(state, e) {
+  if (e.type === "enter") {
+    if (state.queue.length) state.loop.push(state.queue.shift());
+  } else if (e.type === "skip") {
+    for (let i = 0; i < e.n; i++) state.loop.push(state.loop.shift());
+  } else if (e.type === "board") {
+    const bay = state.bays[e.bay];
+    if (state.loop.length && bay) { state.loop.shift(); bay.filled += 1; }
+  } else if (e.type === "depart") {
+    const bay = state.bays[e.bay];
+    if (bay) { state.bays[e.bay] = null; state.departed.push(bay.id); }
+  }
+  return state;
+}
+
+/** The state after the first events of a log have been shown, starting from `base` (a copy). */
+export function replayEvents(base, events) {
+  const s = clone(base);
+  for (const e of events) applyEvent(s, e);
+  return s;
+}
+
+/**
+ * Tap a bus while earlier boarding may still be on screen. `world` is the state as the
+ * screen shows it right now (null when everything has settled). The new bus drives into
+ * a free bay straight away and everyone still waiting is settled together with every
+ * bus now in a bay, so people at the pickup board whichever bay bus matches their colour.
+ * Deterministic for the same taps and the same moment. Returns like sessionTap plus
+ * { base } (the world with the bus placed, before settling) for the screen to replay from.
+ * A tap when every bay is full on screen right now is refused with problem "busy".
+ */
+export function sessionTapAt(session, busId, world = null) {
+  const problem = tapProblem(session.state, busId);
+  if (problem && problem !== "full") return { moved: false, problem };
+  if (problem === "full") return sessionTap(session, busId);
+  if (world && !hasFreeBay(world)) return { moved: false, problem: "busy" };
+  const before = clone(session.state);
+  const next = clone(world || session.state);
+  const idx = next.parked.findIndex((b) => b.id === busId);
+  if (idx < 0) return { moved: false, problem: "missing" };
+  const bus = next.parked[idx];
+  const bay = next.bays.findIndex((b) => b === null);
+  next.parked.splice(idx, 1);
+  next.tick += 1;
+  next.bays[bay] = { id: bus.id, colour: bus.colour, capacity: bus.capacity, filled: 0, arrivedAt: next.tick };
+  const base = clone(next);
+  const { events } = settle(next);
+  session.undoStack.push(before);
+  session.state = next;
+  return { moved: true, bay, events, lost: false, before, base };
 }
 
 export function sessionUndo(session) {

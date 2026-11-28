@@ -11,7 +11,7 @@ test("start of level 1: the ring fills up to loopCapacity, feeders hold the rest
   assert.equal(s.loop.length, 48);
   assert.equal(s.queue.length, l.queue.length - 48);
   assert.equal(s.loop[0], l.queue[0], "the first person in line stands at the pickup");
-  assert.deepEqual(s.bays, [null, null, null, null, null]);
+  assert.deepEqual(s.bays, new Array(l.bays).fill(null));
   assert.equal(s.parked.length, l.buses.length);
 });
 

@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { initialState, applyMove, legalMoves, isStuck } from "../js/game.js";
+import { initialState, applyMove, legalMoves, isStuck, createSession, sessionTapAt } from "../js/game.js";
 import { loadLevel as readLevel, analyseLevel } from "./solve.mjs";
 
 const BASE = process.argv[2] || "http://127.0.0.1:8765/";
@@ -293,6 +293,87 @@ async function runMotionChecks() {
   return reports;
 }
 
+/** Three free buses tapped in a row before anyone boards; people then board at least two of them. */
+function pickThreeBuses() {
+  for (const id of [1, 2, 3, 5, 8, 12, 20, 30, 50]) {
+    const level = readLevel(id);
+    if ((level.bays ?? 5) < 3) continue;
+    const first = createSession(level);
+    for (const a of legalMoves(first.state)) {
+      for (const b of legalMoves(first.state)) {
+        for (const c3 of legalMoves(first.state)) {
+          if (new Set([a.id, b.id, c3.id]).size < 3) continue;
+          const s = createSession(level);
+          let world = null, events = [], ok = true;
+          for (const bus of [a, b, c3]) {
+            const r = sessionTapAt(s, bus.id, world);
+            if (!r.moved || r.lost) { ok = false; break; }
+            world = r.base; events = r.events; // nothing shown yet: the next tap settles with this one
+          }
+          if (!ok) continue;
+          const boards = events.filter((e) => e.type === "board");
+          const bays = new Set(boards.map((e) => e.bay));
+          if (bays.size >= 2 && boards.length >= 6 && new Set([a.colour, b.colour, c3.colour]).size >= 2) {
+            return { level: id, taps: [a.id, b.id, c3.id], boards: boards.length, bays: [...bays] };
+          }
+        }
+      }
+    }
+  }
+  throw new Error("no level offers three taps that board at least two bays");
+}
+
+/** Taps 3 buses in quick succession and checks they arrive and board at the same time. */
+async function runMultiBusCheck(tag = "multi-bus", w = 390, h = 844, dsf = 3, shots = false) {
+  const pick = pickThreeBuses();
+  await go(BASE + "?level=" + pick.level, w, h, dsf); await sleep(400);
+  const open = await evaluate("window.__busBuddies.bayState().open");
+  // Start sampling inside the game loop, then tap three buses ~120 ms apart without waiting.
+  await evaluate("window.__multiCap = window.__busBuddies.capture(24000); true");
+  await sleep(150);
+  await evaluate(`new Promise((res) => { const ids = ${JSON.stringify(pick.taps)}; let i = 0; const tick = () => { window.__busBuddies.tap(ids[i++]); if (i < ids.length) setTimeout(tick, 120); else res(true); }; tick(); })`);
+  if (shots && MOTION_DIR) {
+    for (let i = 0; i < 28; i++) { await shotTo(MOTION_DIR, `${tag}-${String(i + 1).padStart(2, "0")}.png`); await sleep(110); }
+  }
+  const samples = (await evaluate("window.__multiCap")) || [];
+  const stats = motionStats(samples.filter((s) => s.people), await evaluate("window.__busBuddies.door"), tag);
+  await idle();
+  const finalState = await evaluate("window.__busBuddies.state");
+  const finalBays = await evaluate("window.__busBuddies.bayState()");
+  let maxDriving = 0, maxOcc = 0, maxFilling = 0, maxBoardBays = 0, firstAllThree = null, sawIds = new Set(), maxEvents = 0;
+  for (const s of samples) {
+    const b = s.bay; if (!b) continue;
+    maxDriving = Math.max(maxDriving, b.driving.length);
+    const occ = b.occupied.filter(Boolean).length + b.driving.length;
+    maxOcc = Math.max(maxOcc, occ);
+    maxFilling = Math.max(maxFilling, b.filling.length);
+    maxBoardBays = Math.max(maxBoardBays, b.boarding.length);
+    maxEvents = Math.max(maxEvents, b.events);
+    for (const id of b.ids) if (id) sawIds.add(id);
+    if (firstAllThree == null && occ >= 3) firstAllThree = Math.round(s.t - samples[0].t);
+  }
+  const report = {
+    tag, level: pick.level, openBays: open, taps: pick.taps, engineBoardBays: pick.bays, samples: samples.length,
+    maxDrivingAtOnce: maxDriving, maxBusesInBaysOrDriving: maxOcc, maxBaysFilling: maxFilling, maxBaysWithBoardersAtOnce: maxBoardBays,
+    allThreeSeenAtOnceAtMs: firstAllThree, tappedBusesSeenInBays: pick.taps.filter((x) => sawIds.has(x)),
+    ringAngularCV: stats.ang, jumps: stats.jumpCount, maxJump: stats.maxJump, badBirths: stats.badBirths.length, badDeaths: stats.badDeaths.length,
+    queuedEventsPeak: maxEvents,
+    finalDisplayBays: finalBays.occupied, engineBays: finalState.bays.map((x) => !!x),
+  };
+  console.log("multi-bus " + tag + ":", JSON.stringify(report));
+  if (MOTION_DIR) writeFileSync(join(MOTION_DIR, tag + "-stats.json"), JSON.stringify(report, null, 2));
+  const problems = [];
+  if (open < 3) problems.push("level has fewer than 3 bays");
+  if (maxDriving < 2) problems.push("buses did not drive in together (max driving at once " + maxDriving + ")");
+  if (maxOcc < 3) problems.push("three buses were never in the bays at the same time (max " + maxOcc + ")");
+  if (report.tappedBusesSeenInBays.length < 3) problems.push("not every tapped bus reached a bay: " + report.tappedBusesSeenInBays.join(","));
+  if (maxFilling < 2) problems.push("only one bus filled at a time (max bays filling " + maxFilling + ")");
+  if (stats.jumpCount || stats.badBirths.length || stats.badDeaths.length) problems.push("people jumped, appeared or vanished during the multi-bus run");
+  if (JSON.stringify(report.finalDisplayBays) !== JSON.stringify(report.engineBays)) problems.push("the screen and the game state disagree about the bays once everything settled");
+  if (problems.length) throw new Error("multi-bus check failed: " + problems.join("; "));
+  return report;
+}
+
 async function runSmoothnessMeasures() {
   const reports = [];
   const jobs = [
@@ -318,6 +399,14 @@ async function runSmoothnessMeasures() {
   const skinny = reports.filter((r) => r.bus && r.bus.parkWid < 38);
   if (skinny.length) throw new Error("parked buses smaller than 38px: " + skinny.map((r) => r.label + " " + r.bus.parkWid).join("; "));
   return reports;
+}
+
+if (process.env.MULTI_ONLY) {
+  phase = "multi-bus";
+  await runMultiBusCheck("multi-bus-iphone", 390, 844, 3, true);
+  await runMultiBusCheck("multi-bus-ipad", 820, 1180, 2, false);
+  c.close(); chrome.kill();
+  process.exit(0);
 }
 
 if (process.env.MEASURE_ONLY) {
@@ -442,7 +531,7 @@ for (const [i, id] of path12.entries()) {
     await sleep(1500);
     const hud = await evaluate("document.getElementById('hud-level').textContent");
     console.log("resume after reload: stored=" + stored + " hud=" + hud);
-    if (hud !== "Level 12") throw new Error("Play did not resume level 12 (hud=" + hud + ", stored=" + stored + ")");
+    if (!/^Level 12\b/.test(hud)) throw new Error("Play did not resume level 12 (hud=" + hud + ", stored=" + stored + ")");
   }
   await evaluate(`window.__busBuddies.tap('${id}'); true`); await idle();
 }
@@ -471,6 +560,16 @@ console.log("motion checks passed:", motionReports.map((r) => r.label + " maxJum
 phase = "smoothness-measure";
 const smoothReports = await runSmoothnessMeasures();
 console.log("smoothness measures:", smoothReports.map((r) => r.label + " cv=" + (r.ang && r.ang.cv) + " meanW=" + (r.ang && r.ang.meanDegS) + " p95=" + (r.frameMs && r.frameMs.p95) + " over50=" + (r.frameMs && r.frameMs.over50) + " busWid=" + (r.bus && Math.round(r.bus.parkWid * 10) / 10)).join("; "));
+
+// Several buses at once: tap 3 in quick succession (iPhone dsf 3, iPad dsf 2, and a slow phone).
+phase = "multi-bus";
+const multiReports = [];
+multiReports.push(await runMultiBusCheck("multi-bus-iphone", 390, 844, 3, !!MOTION_DIR));
+multiReports.push(await runMultiBusCheck("multi-bus-ipad", 820, 1180, 2, false));
+await c.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+multiReports.push(await runMultiBusCheck("multi-bus-iphone-cpu4", 390, 844, 3, false));
+await c.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+console.log("multi-bus checks passed:", multiReports.map((r) => r.tag + " driving<=" + r.maxDrivingAtOnce + " bays=" + r.maxBusesInBaysOrDriving + " filling=" + r.maxBaysFilling).join("; "));
 
 // Offline check: SW should be controlling by now.
 const swState = await evaluate("navigator.serviceWorker.ready.then(r => r.active && r.active.state)");

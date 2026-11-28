@@ -31,7 +31,7 @@ export function cardOpen() { return !$("overlay").hidden; }
 export function setStuckVisible(v) { $("stuck").hidden = !v; }
 
 export function setHint(text) { $("hint").textContent = text; }
-export function setLevelLabel(n) { $("hud-level").textContent = `Level ${n}`; }
+export function setLevelLabel(n, bays) { $("hud-level").textContent = bays ? `Level ${n} · ${bays} bays` : `Level ${n}`; }
 export function setUndoEnabled(v) { $("btn-undo").classList.toggle("muted", !v); $("btn-undo").setAttribute("aria-disabled", String(!v)); }
 
 const LEVEL_COLOURS = ["#E23B2F", "#F5C518", "#2F7DE1", "#3BA55C", "#8B4ACB", "#E85A9B"];
@@ -77,5 +77,5 @@ export const HOW_TO_PLAY = `<div class="how">
   <div><b>2</b><span>People hop on at the bottom of the circle, onto a bus of their colour. If their bus is not there, they go round again.</span></div>
   <div><b>3</b><span>The number shows empty seats. At 0 the bus drives away.</span></div>
   <div><b>4</b><span>Dark buses with a ? show their colour when their road is clear.</span></div>
-  <div><b>5</b><span>Keep a bay free! Five full bays means out of room.</span></div>
+  <div><b>5</b><span>You can send several buses at once. Keep a bay free! If every bay is full and nobody can hop on, you are out of room.</span></div>
 </div>`;

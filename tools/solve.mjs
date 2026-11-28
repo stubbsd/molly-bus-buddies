@@ -12,8 +12,8 @@
 //   node tools/solve.mjs            # the whole campaign, writes tools/solver-report.md
 //   node tools/solve.mjs 5 6        # only these levels, no report written
 import { readFileSync, writeFileSync } from "node:fs";
-import { initialState, applyMove, isWon, peopleMatchSeats, queueConflicts, isUnblocked } from "../js/game.js";
-import { COLOURS, CAPACITIES, BAY_COUNT } from "../js/slots.js";
+import { initialState, applyMove, isWon, peopleMatchSeats, queueConflicts, isUnblocked, bayCountOf } from "../js/game.js";
+import { COLOURS, CAPACITIES, BAY_COUNT, MIN_BAYS } from "../js/slots.js";
 import { blockerMap, peel, firstOverlap } from "../js/park.js";
 
 const ROOT = new URL("../", import.meta.url);
@@ -34,6 +34,7 @@ export function validateSchema(level) {
   const errors = [];
   if (!Number.isInteger(level.loopCapacity) || level.loopCapacity < 1) errors.push("loopCapacity must be a positive integer");
   if (!level.park || !(level.park.w > 0) || !(level.park.h > 0)) errors.push("park needs a positive w and h");
+  if ("bays" in level && !(Number.isInteger(level.bays) && level.bays >= MIN_BAYS && level.bays <= BAY_COUNT)) errors.push(`bays must be a whole number from ${MIN_BAYS} to ${BAY_COUNT}`);
   if (!Array.isArray(level.queue)) errors.push("queue must be an array");
   else for (const c of level.queue) if (!COLOURS.includes(c)) errors.push("bad colour " + c);
   const ids = new Set();
@@ -68,6 +69,7 @@ export function model(level) {
     blockers: buses.map((b) => map[b.id].map((id) => idx[id])),
     queue: level.queue.map((c) => col[c]),
     loopCap: level.loopCapacity,
+    bays: bayCountOf(level),
   };
 }
 
@@ -140,7 +142,7 @@ function orderMoves(m, s, free) {
 }
 
 /** Depth-first search for a win using at most `bayCap` bays at once. */
-export function search(m, bayCap = BAY_COUNT, budget = NODE_BUDGET, from = startState(m)) {
+export function search(m, bayCap = m.bays, budget = NODE_BUDGET, from = startState(m)) {
   const dead = new Set();
   let nodes = 0, out = false;
   const path = [];
@@ -178,7 +180,7 @@ export function carefulWinRate(m, trials = 400, seed = 1) {
     let s = startState(m);
     for (;;) {
       if (won(m, s)) { wins++; break; }
-      if (s.bays.length >= BAY_COUNT) break;
+      if (s.bays.length >= m.bays) break;
       const free = freeBuses(m, s);
       if (!free.length) break;
       const pick = s.loop[0];
@@ -202,13 +204,14 @@ export function analyseLevel(level, opts = {}) {
     Q: queueConflicts(level.queue),
     Mys: level.buses.filter((b) => b.mystery).length,
     people: level.queue.length,
+    bays: bayCountOf(level),
   };
   if (schemaErrors.length) return { id: level.id, name: level.name, schemaErrors, metrics, solvable: false, ms: Date.now() - t0 };
   const m = model(level);
   const main = search(m);
   let BP = null, bpPath = [], budgetHit = main.budgetHit, nodes = main.nodes;
   if (main.ok) {
-    for (let k = 1; k <= BAY_COUNT; k++) {
+    for (let k = 1; k <= m.bays; k++) {
       const r = search(m, k);
       nodes += r.nodes;
       if (r.ok) { BP = k; bpPath = r.path; break; }
@@ -219,7 +222,7 @@ export function analyseLevel(level, opts = {}) {
   if (!opts.quick) {
     const s0 = startState(m);
     for (const i of freeBuses(m, s0)) {
-      const r = search(m, BAY_COUNT, 60_000, move(m, s0, i).t);
+      const r = search(m, m.bays, 60_000, move(m, s0, i).t);
       nodes += r.nodes;
       if (r.ok) goodStart.push(m.ids[i]); else if (!r.budgetHit) badStart.push(m.ids[i]);
     }
@@ -231,7 +234,7 @@ export function analyseLevel(level, opts = {}) {
     try { for (const id of main.path) st = applyMove(st, id).state; replayOk = isWon(st); } catch { replayOk = false; }
   }
   return {
-    id: level.id, name: level.name, schemaErrors, metrics,
+    id: level.id, name: level.name, schemaErrors, metrics, bays: bayCountOf(level),
     solvable: main.ok && replayOk, replayOk, M: main.ok ? main.path.length : null, shortestPath: main.path, path: main.path,
     BP, bpPath, goodStart, badStart, winRate: opts.quick && !opts.winGames ? null : carefulWinRate(m, opts.winGames || 400), states: nodes, budgetHit, ms: Date.now() - t0,
   };
@@ -246,6 +249,7 @@ export function campaignProblems(results) {
     if (b.metrics.blocked < a.metrics.blocked) problems.push(`level ${b.id}: fewer blocked buses than level ${a.id}`);
     if (b.metrics.C < a.metrics.C) problems.push(`level ${b.id}: fewer colours than level ${a.id}`);
     if (b.metrics.Mys < a.metrics.Mys) problems.push(`level ${b.id}: fewer mystery buses than level ${a.id}`);
+    if (b.metrics.bays < a.metrics.bays) problems.push(`level ${b.id}: fewer bays than level ${a.id}`);
     if (b.BP !== null && a.BP !== null && b.BP < a.BP) problems.push(`level ${b.id}: needs fewer bays at once than level ${a.id}`);
     if (b.winRate > a.winRate + 0.08) problems.push(`level ${b.id}: much easier for a careful player than level ${a.id} (${pct(b.winRate)} vs ${pct(a.winRate)})`);
   }
@@ -254,6 +258,8 @@ export function campaignProblems(results) {
     if (r.id >= 6 && r.metrics.Mys === 0) problems.push(`level ${r.id}: mystery buses from level 6`);
     if (r.id <= 2 && r.BP !== 1) problems.push(`level ${r.id}: early levels should only need one bay at a time (BP = 1)`);
     if (r.id >= 3 && r.BP < 2) problems.push(`level ${r.id}: from level 3 the conveyor should need at least two bays at once`);
+    if (r.metrics.bays < 3) problems.push(`level ${r.id}: every level should have at least three bays (has ${r.metrics.bays})`);
+    if (r.BP !== null && r.BP >= r.metrics.bays) problems.push(`level ${r.id}: needs every bay at once (BP ${r.BP} of ${r.metrics.bays}); keep one spare so several buses can be tapped`);
   }
   if (results.length >= 2) {
     const first = results[0], last = results[results.length - 1];
@@ -261,6 +267,7 @@ export function campaignProblems(results) {
     if (last.metrics.C < 6) problems.push("the last level should use all six colours");
     if (last.metrics.Mys < 6) problems.push("the last level should have a thicket of mystery buses");
     if ((last.BP ?? 0) < 3) problems.push("the last level should need at least three bays at once");
+    if (last.metrics.bays <= first.metrics.bays) problems.push("the last level should have more bays than the first");
   }
   return problems;
 }
@@ -273,7 +280,7 @@ export function levelProblems(r) {
   if (!r.solvable) p.push(`level ${r.id}: unsolvable`);
   if (r.metrics.blocked * 2 <= r.metrics.B) p.push(`level ${r.id}: most buses must start blocked (${r.metrics.blocked}/${r.metrics.B})`);
   if (r.solvable && r.M !== r.metrics.B) p.push(`level ${r.id}: M (${r.M}) does not equal B`);
-  if (r.solvable && r.BP > 4) p.push(`level ${r.id}: needs all five bays at once (BP ${r.BP})`);
+  if (r.solvable && r.BP >= BAY_COUNT) p.push(`level ${r.id}: needs all five bays at once (BP ${r.BP})`);
   return p;
 }
 
@@ -282,8 +289,8 @@ function report(results, problems) {
   let md = `# Solver report\n\nGenerated by \`node tools/solve.mjs\` on ${when} (Europe/London). Rules: v3 car park (packed jam, blocking from the buses' real shapes), conveyor boarding (hop on at the bottom of the ring), seat countdowns, mystery buses, out-of-room loss.\n\n`;
   md += "B buses, Blocked = buses that cannot move at the start, D = waves needed to clear the car park, C colours, BP = fewest bays needed at once, Mys mystery buses, Q colour changes in the queue, Careful = share of games won by a careful but short-sighted player (taps a bus the front person can board when there is one, otherwise a random free bus; 400 games), Dead openings = first taps that can no longer be won.\n\n";
   md += `**Result:** ${problems.length ? "FAIL" : "PASS"} — ${results.filter((r) => r.solvable).length}/${results.length} levels solvable (each solution replayed with the real rules engine).\n\n`;
-  md += "| Lv | Name | B | Blocked | D | C | People | BP | Mys | Q | Careful | Dead openings | Nodes | ms |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n";
-  for (const r of results) md += `| ${r.id} | ${r.name} | ${r.metrics.B} | ${r.metrics.blocked} | ${r.metrics.D} | ${r.metrics.C} | ${r.metrics.people} | ${r.BP ?? "–"} | ${r.metrics.Mys} | ${r.metrics.Q} | ${pct(r.winRate ?? 0)} | ${r.badStart?.length ?? 0}/${(r.badStart?.length ?? 0) + (r.goodStart?.length ?? 0)} | ${r.states ?? "–"} | ${r.ms} |\n`;
+  md += "| Lv | Name | Bays | B | Blocked | D | C | People | BP | Mys | Q | Careful | Dead openings | Nodes | ms |\n|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n";
+  for (const r of results) md += `| ${r.id} | ${r.name} | ${r.metrics.bays} | ${r.metrics.B} | ${r.metrics.blocked} | ${r.metrics.D} | ${r.metrics.C} | ${r.metrics.people} | ${r.BP ?? "–"} | ${r.metrics.Mys} | ${r.metrics.Q} | ${pct(r.winRate ?? 0)} | ${r.badStart?.length ?? 0}/${(r.badStart?.length ?? 0) + (r.goodStart?.length ?? 0)} | ${r.states ?? "–"} | ${r.ms} |\n`;
   md += "\n## Per level\n";
   for (const r of results) {
     md += `\n### Level ${r.id} — ${r.name}\n\n- Solvable: **${r.solvable ? "yes" : "NO"}**\n`;
@@ -293,7 +300,7 @@ function report(results, problems) {
       md += `- Good opening buses: ${r.goodStart.join(", ") || "none"}; dead-end openings: ${r.badStart.join(", ") || "none"}\n`;
     }
   }
-  md += "\n## Campaign rule\n\n" + (problems.length ? problems.map((p) => `- ${p}`).join("\n") : "All checks pass: every level is solvable (replayed with the real engine); buses, blocked buses, colours, mystery buses and BP never drop (plateaus are allowed so the 100-level campaign can rise gently); the last level has more buses than the first; most buses start blocked on every level; no mystery buses before level 6 and mystery buses on every level from 6, each starting blocked; no level needs all five bays; a careful player never finds a level much easier than the one before; the last level uses more buses, all six colours, more mystery buses, and higher bay pressure than the first.") + "\n";
+  md += "\n## Campaign rule\n\n" + (problems.length ? problems.map((p) => `- ${p}`).join("\n") : "All checks pass: every level is solvable (replayed with the real engine); buses, blocked buses, colours, mystery buses and BP never drop (plateaus are allowed so the 100-level campaign can rise gently); the last level has more buses than the first; most buses start blocked on every level; no mystery buses before level 6 and mystery buses on every level from 6, each starting blocked; every level has at least three bays and bays never drop; no level needs every one of its bays at once (one is always spare); no level needs all five bays; a careful player never finds a level much easier than the one before; the last level uses more buses, all six colours, more mystery buses, and higher bay pressure than the first.") + "\n";
   return md;
 }
 
@@ -306,13 +313,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   for (const level of levels) {
     const r = analyseLevel(level);
     results.push(r);
-    console.log(`L${String(r.id).padStart(3)} ${r.name.padEnd(22)} solvable=${r.solvable} B=${r.metrics.B} blocked=${r.metrics.blocked} D=${r.metrics.D} C=${r.metrics.C} people=${r.metrics.people} BP=${r.BP} Mys=${r.metrics.Mys} careful=${pct(r.winRate ?? 0)} dead=${r.badStart?.length}/${(r.badStart?.length ?? 0) + (r.goodStart?.length ?? 0)} nodes=${r.states} ${r.ms}ms`);
+    console.log(`L${String(r.id).padStart(3)} ${r.name.padEnd(22)} solvable=${r.solvable} bays=${r.bays} B=${r.metrics.B} blocked=${r.metrics.blocked} D=${r.metrics.D} C=${r.metrics.C} people=${r.metrics.people} BP=${r.BP} Mys=${r.metrics.Mys} careful=${pct(r.winRate ?? 0)} dead=${r.badStart?.length}/${(r.badStart?.length ?? 0) + (r.goodStart?.length ?? 0)} nodes=${r.states} ${r.ms}ms`);
   }
   const problems = [...results.flatMap(levelProblems), ...(ids.length ? [] : campaignProblems(results))];
   if (!ids.length) {
     writeFileSync(new URL("tools/solver-report.md", ROOT), report(results, problems));
     const metrics = results.map((r) => ({
-      id: r.id, B: r.metrics.B, blocked: r.metrics.blocked, D: r.metrics.D, C: r.metrics.C,
+      id: r.id, bays: r.metrics.bays, B: r.metrics.B, blocked: r.metrics.blocked, D: r.metrics.D, C: r.metrics.C,
       people: r.metrics.people, BP: r.BP, Mys: r.metrics.Mys, winRate: r.winRate, path: r.path, ms: r.ms,
     }));
     writeFileSync(new URL("tools/campaign-metrics.json", ROOT), JSON.stringify(metrics, null, 2) + "\n");

@@ -1,6 +1,6 @@
 // Boot, screen routing, input, and the animation that plays out each settle.
 import {
-  createSession, sessionTap, sessionUndo, sessionRestart, isWon, isStuck, isLost, isRevealed, keyOf, clone,
+  createSession, sessionTapAt, sessionUndo, replayEvents, sessionRestart, isWon, isStuck, isLost, isRevealed, keyOf, clone,
 } from "./game.js";
 import {
   computeLayout, busPos, ringSlot, queuePoint, loopXY, hitBus, armNeed, drawBead, drawBus, drawBackground,
@@ -32,8 +32,8 @@ const ctx = canvas.getContext("2d");
 // ---------------- display model ----------------
 const D = {
   queue: [], loop: [], persons: new Map(), bays: [null, null, null, null, null],
-  ghosts: [], flyers: [], events: [], nextAt: 0, shakes: new Map(), bumps: new Map(),
-  confetti: [], phase: 0, spin: 0, skip: null, resync: null, clock: null, armLens: null, pendingSettle: false,
+  ghosts: [], flyers: [], events: [], done: [], base: null, nextAt: 0, shakes: new Map(), bumps: new Map(),
+  confetti: [], phase: 0, spin: 0, skip: null, clock: null, armLens: null, pendingSettle: false,
 };
 
 const person = (colour) => ({ pid: ++pid, colour });
@@ -132,7 +132,7 @@ function rebuildDisplay() {
     if (per && per.arm == null) per.arm = Math.floor(i / 3) % 2;
   });
   D.bays = s.bays.map((b) => (b ? { id: b.id, colour: b.colour, capacity: b.capacity, filled: b.filled, pending: 0 } : null));
-  D.ghosts = []; D.flyers = []; D.events = []; D.pendingSettle = false; D.spin = 0; D.skip = null; D.resync = null; D.armLens = null; D.clock = null;
+  D.ghosts = []; D.flyers = []; D.events = []; D.done = []; D.base = null; D.pendingSettle = false; D.spin = 0; D.skip = null; D.armLens = null; D.clock = null;
 }
 
 function snapPositions() {
@@ -218,15 +218,23 @@ function conveyorOmega() {
   return RM() ? 0 : slotsOf() / (T.lap / 1000);
 }
 
+/** How far (degrees round the island) a ring person is from the bottom door:
+ *  negative = still coming round, positive = already past. */
+function doorGap(p) {
+  const per = p && D.persons.get(p.pid);
+  if (!per) return 0;
+  return norm((Math.atan2(per.y - L.island.cy, per.x - L.island.cx) * 180) / Math.PI - 90);
+}
+
+/** True when this person has reached the bottom door (and not gone well past it),
+ *  so they can step off towards a bus. Judged by angle so inner-lane people count too. */
 function nearDoor(p) {
   if (!p || !L) return true;
   const per = D.persons.get(p.pid);
   if (!per) return true;
-  // The door point sits on the outer rim, so inner-lane people are further
-  // away in pixels; judge by angle around the island instead (6 o'clock).
-  const a = (Math.atan2(per.y - L.island.cy, per.x - L.island.cx) * 180) / Math.PI;
-  if (Math.abs(norm(a - 90)) <= 18) return true;
-  return Math.hypot(per.x - L.door.x, per.y - L.door.y) <= L.br * 3.4;
+  if (per.merging) return false;
+  const g = doorGap(p);
+  return g >= -3 && g <= 40;
 }
 
 function personAtDoor() {
@@ -356,38 +364,36 @@ function spinAt(now) {
   return D.clock.spin0 + ((now - D.clock.t0) / 1000) * omega;
 }
 
+/** The game as the screen shows it right now (null when every event has been played). */
+function worldNow() {
+  if (!D.events.length || !D.base) return null;
+  return replayEvents(D.base, D.done);
+}
+
 function step(now, dt) {
   const speed = RM() ? 0.15 : 1;
   const slots = slotsOf();
-  const ev0 = D.events[0];
-  // Hold loop[0] at the door while their bus is still pulling in, so the ring
-  // does not carry them past it and wait a whole lap.
-  const hold = !RM() && !D.resync && ev0?.type === "board" && D.loop[0] && nearDoor(D.loop[0])
-    && D.ghosts.some((g) => g.kind === "toBay" && g.bay === ev0.bay);
-  if (D.resync) {
-    if (RM() || D.resync.dur <= 0) { D.spin = D.resync.to ?? 0; D.resync = null; spinClockClear(); }
-    else {
-      const u = Math.min(1, (now - D.resync.t0) / D.resync.dur);
-      D.spin = D.resync.from + (D.resync.to - D.resync.from) * u;
-      if (u >= 1) { D.spin = D.resync.to; D.resync = null; spinClockClear(); }
-    }
-  } else if (RM() || hold) {
-    spinClockClear();
-  } else {
-    D.spin = spinAt(now);
-  }
+  // The ring never waits: it turns at one constant speed whatever the buses are
+  // doing (drive in, board, leave). Events wait for the ring, not the other way round.
+  if (RM()) spinClockClear();
+  else D.spin = spinAt(now);
 
-  // Play settle events against the moving conveyor. Skips are just continued
-  // rotation; reduced motion snaps the array so boarding still works.
-  while (D.events.length && now >= D.nextAt && !D.resync) {
+  // Play settle events against the moving conveyor. Taps can arrive while earlier
+  // buses are still driving in or boarding: the engine has already settled them in
+  // order, and here they simply queue up in that same order.
+  while (D.events.length && now >= D.nextAt) {
     const e = D.events[0];
-    const arriving = D.ghosts.some((g) => g.kind === "toBay" && g.bay === e.bay);
+    // Someone can step on once their bus is mostly in (it finishes parking while they walk).
+    const arriving = D.ghosts.some((g) => g.kind === "toBay" && g.bay === e.bay && (now - g.t0) / g.dur < 0.5);
     if (e.type === "skip") {
       if (RM()) {
         for (let i = 0; i < e.n; i++) D.loop.push(D.loop.shift());
-        D.spin = 0; D.skip = null; D.nextAt = now;
+        D.skip = null; D.nextAt = now;
       } else {
-        if (!D.skip) D.skip = { n: e.n, start: D.spin };
+        if (!D.skip) {
+          if (!nearDoor(D.loop[0])) break;
+          D.skip = { n: e.n, start: D.spin };
+        }
         if (D.spin < D.skip.start + e.n) break;
         for (let i = 0; i < e.n; i++) D.loop.push(D.loop.shift());
         D.skip = null; D.nextAt = now;
@@ -402,24 +408,26 @@ function step(now, dt) {
       D.nextAt = now;
     } else if (e.type === "board") {
       if (arriving) break;
-      if (!D.loop.length) { D.events.shift(); continue; }
+      if (!D.loop.length) { D.done.push(D.events.shift()); continue; }
       if (!RM() && !nearDoor(D.loop[0])) break;
       const p = D.loop.shift();
       const per = D.persons.get(p.pid); per.mode = "f"; per.merging = false;
       const pose = { x: per.x, y: per.y };
       D.flyers.push({ pid: p.pid, colour: p.colour, x0: pose.x, y0: pose.y, x: pose.x, y: pose.y, t0: now, dur: T.hop * speed, bay: e.bay });
-      D.bays[e.bay].pending++;
+      if (D.bays[e.bay]) D.bays[e.bay].pending++;
       D.nextAt = now + T.boardGap * speed;
     } else if (e.type === "depart") {
-      if (arriving || D.flyers.some((f) => f.bay === e.bay)) break;
+      if (D.ghosts.some((g) => g.kind === "toBay" && g.bay === e.bay) || D.flyers.some((f) => f.bay === e.bay)) break;
       const b = D.bays[e.bay];
-      D.ghosts.push({ kind: "depart", bus: b, bay: e.bay, t0: now, dur: T.depart * (RM() ? 0.5 : 1) });
-      D.bays[e.bay] = null;
-      audio.play("depart", 0.45);
+      if (b) {
+        D.ghosts.push({ kind: "depart", bus: b, bay: e.bay, t0: now, dur: T.depart * (RM() ? 0.5 : 1) });
+        D.bays[e.bay] = null;
+        audio.play("depart", 0.45);
+      }
     }
-    D.events.shift();
+    D.done.push(D.events.shift());
   }
-  if (!D.events.length && !D.skip && !D.resync) {
+  if (!D.events.length && !D.skip) {
     while (D.spin >= slots) {
       D.spin -= slots;
       if (D.clock) D.clock.spin0 -= slots;
@@ -437,7 +445,7 @@ function step(now, dt) {
       f.done = true;
       D.persons.delete(f.pid);
       const b = D.bays[f.bay];
-      if (b) { b.filled++; b.pending--; }
+      if (b) { b.filled++; b.pending = Math.max(0, b.pending - 1); }
       D.bumps.set(f.bay, now);
       audio.play("board", 0.35);
     }
@@ -516,9 +524,10 @@ function draw(now) {
       const lt = D.lostAt ? Math.min(1, (now - D.lostAt) / T.toBay) : 1;
       const u = ease(lt);
       // portrait: it pulls up just under the road; landscape: it heads towards the bays and stops short
+      const LB = L.bays[Math.floor(L.bays.length / 2)];
       const to = L.landscape
-        ? { x: from.x + (L.bays[2].cx - from.x) * 0.4, y: from.y + (L.bays[2].cy - from.y) * 0.4 }
-        : { x: L.bays[2].cx, y: L.road.y + L.road.h + from.len * 0.5 };
+        ? { x: from.x + (LB.cx - from.x) * 0.4, y: from.y + (LB.cy - from.y) * 0.4 }
+        : { x: LB.cx, y: L.road.y + L.road.h + from.len * 0.5 };
       const c = { x: to.x, y: from.y };
       const gx = (1 - u) * (1 - u) * from.x + 2 * (1 - u) * u * c.x + u * u * to.x;
       const gy = (1 - u) * (1 - u) * from.y + 2 * (1 - u) * u * c.y + u * u * to.y;
@@ -527,7 +536,7 @@ function draw(now) {
   }
   // ghosts
   for (const g of D.ghosts) {
-    const t = Math.min(1, (now - g.t0) / g.dur), e = ease(t);
+    const t = Math.max(0, Math.min(1, (now - g.t0) / g.dur)), e = ease(t);
     if (g.kind === "toBay") {
       // drive out along the roof arrow, then swing round to the bay
       const to = L.bays[g.bay]; const ty = to.cy - to.h * 0.07;
@@ -569,7 +578,7 @@ async function startLevel(id, resume = true) {
   progress.currentLevel = id;
   stuckDismissedKey = null; wonShown = false;
   clearTimeout(loseTimer); D.lostAt = 0;
-  ui.setLevelLabel(id); ui.setHint(HINT); ui.setStuckVisible(false); ui.hideCard();
+  ui.setLevelLabel(id, session.state.bays.length); ui.setHint(HINT); ui.setStuckVisible(false); ui.hideCard();
   ui.showScreen("game");
   resize();
   rebuildDisplay();
@@ -586,38 +595,43 @@ function onTap(x, y) {
 }
 
 function tapBus(id) {
-  if (!session || ui.cardOpen() || busy() || isWon(session.state) || isLost(session.state)) return;
-  const before = session.state;
-  const bus = before.parked.find((b) => b.id === id);
+  // No busy() gate: taps are accepted while other buses are still driving in or
+  // boarding. The new bus joins the others already in the bays and everyone still
+  // waiting is settled together, so the people at the door board whichever bay
+  // bus matches their colour.
+  if (!session || ui.cardOpen() || isWon(session.state) || isLost(session.state)) return;
+  const bus = session.state.parked.find((b) => b.id === id);
   if (!bus) return;
-  const r = sessionTap(session, id);
-  if (!r.moved) { D.shakes.set(id, performance.now()); audio.play("shake", 0.4); return; }
+  const r = sessionTapAt(session, id, worldNow());
+  if (!r.moved) {
+    D.shakes.set(id, performance.now());
+    audio.play("shake", 0.4);
+    if (r.problem === "busy") ui.setHint("Every bay is busy for a moment");
+    return;
+  }
   audio.play("tap", 0.4);
   ui.setStuckVisible(false);
   if (r.lost) {
     D.lostAt = performance.now();
     ui.setHint("The loading bays are full");
     updateUndo(); save();
-    showOutOfRoom(RM() ? 150 : T.loseCard);
+    showOutOfRoom(RM() ? 200 : T.loseCard);
     return;
   }
+  ui.setHint(HINT);
   const from = busPos(L, bus);
   const now = performance.now();
   const dur = RM() ? 200 : T.toBay;
-  D.ghosts.push({ kind: "toBay", bus, from, bay: r.bay, t0: now, dur });
-  D.events.push(...r.events);
-  D.nextAt = now;
+  // If an earlier bus is still pulling out of this bay, wait for it to clear.
+  const leaving = D.ghosts.find((g) => g.kind === "depart" && g.bay === r.bay);
+  D.ghosts.push({ kind: "toBay", bus, from, bay: r.bay, t0: leaving ? leaving.t0 + leaving.dur : now, dur });
+  // Everything still to come from this moment, settled with every bus now in a bay.
+  D.base = r.base;
+  D.done = [];
+  D.events = r.events.slice();
+  D.skip = null;
+  if (!D.events.length) D.nextAt = now;
   D.pendingSettle = true;
-  // Keep turning forwards at the same speed until loop[0] is back at the door.
-  // No rewind and no speed-up: a direction change was itself a kind of judder.
-  const sl = L.ringSlots.length;
-  const s = wrap(D.spin, sl);
-  spinClockClear();
-  if (!RM() && s > 0.08) {
-    const rem = sl - s;
-    const natural = rem / (sl / (T.lap / 1000)) * 1000;
-    D.resync = { from: D.spin, to: D.spin + rem, t0: now, dur: Math.max(40, natural) };
-  } else D.spin = D.spin - s;
   updateUndo();
   save();
 }
@@ -757,6 +771,21 @@ window.__busBuddies = {
   get door() { return L && { x: L.door.x, y: L.door.y }; },
   get island() { return L && { cx: L.island.cx, cy: L.island.cy }; },
   get busSize() { return L && { parkWid: L.parkBus.wid, parkLen: L.parkBus.len, bayWid: L.bayBus.wid }; },
+  /** What is on screen at the bays right now (for the multi-bus browser check). */
+  bayState() {
+    const now = performance.now();
+    return {
+      open: L ? L.bays.length : 0,
+      occupied: D.bays.map((b) => !!b),
+      ids: D.bays.map((b) => (b ? b.id : null)),
+      filling: D.bays.map((b, i) => (b && (b.filled > 0 || b.pending > 0) ? i : -1)).filter((i) => i >= 0),
+      driving: D.ghosts.filter((g) => g.kind === "toBay" && (now - g.t0) / g.dur < 1).map((g) => g.bay),
+      boarding: [...new Set(D.flyers.map((f) => f.bay))],
+      departing: D.ghosts.filter((g) => g.kind === "depart").map((g) => g.bay),
+      events: D.events.length,
+      flyers: D.flyers.length,
+    };
+  },
   ringPeople() {
     if (!session || !L) return [];
     return D.loop.map((p, i) => {
@@ -798,7 +827,7 @@ window.__busBuddies = {
       // second loop was reading stale poses and invented a false judder.
       D.captureTick = (now) => {
         const people = window.__busBuddies.people().map((p) => ({ id: p.id, role: p.role, x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, a: p.a, colour: p.colour }));
-        out.push({ t: now, people, phase: D.spin, busy: busy(), flyers: D.flyers.length });
+        out.push({ t: now, people, phase: D.spin, busy: busy(), flyers: D.flyers.length, bay: window.__busBuddies.bayState() });
         if (now - t0 >= ms) { D.captureTick = null; resolve(out); }
       };
     });
